@@ -1,0 +1,33 @@
+#!/bin/sh
+# systemd system-sleep hook (installed as /usr/lib/systemd/system-sleep/pennyos).
+#
+# Two drivers cancel the whole suspend unless they are dealt with first:
+#  - USB (mtu3) refuses while the gadget counts as connected, and with our VBUS
+#    workaround it always does. Drop the link for the duration.
+#  - the Wi-Fi/Bluetooth transport (btif) refuses unless the radio chip is idle,
+#    and it stays "busy" for a while after every refused attempt. Switching Wi-Fi
+#    off first is the one thing that made suspend succeed every time.
+# On wake both come back and wpa_supplicant is told to reconnect at once.
+# A third driver, the keyboard, suspends fine but is dead afterwards.
+UDC=$(ls -d /sys/class/udc/* 2>/dev/null | head -1)
+case "$1" in
+  pre)
+    [ -n "$UDC" ] && echo disconnect > "$UDC/soft_connect"
+    if [ -c /dev/wmtWifi ] && [ -d /sys/class/net/wlan0 ]; then
+      touch /run/penny-wifi-was-on
+      printf 0 > /dev/wmtWifi
+      sleep 3
+    fi ;;
+  post)
+    [ -n "$UDC" ] && echo connect > "$UDC/soft_connect"
+    # the keyboard matrix driver does not come back from sleep; rebinding it does
+    K=/sys/bus/platform/drivers/gpio-fastmatrix-keyboard
+    if [ -e $K/keyboard ]; then echo keyboard > $K/unbind; echo keyboard > $K/bind; fi
+    if [ -e /run/penny-wifi-was-on ]; then
+      rm -f /run/penny-wifi-was-on
+      printf 1 > /dev/wmtWifi
+      sleep 4
+      /usr/sbin/wpa_cli -i wlan0 reassociate >/dev/null 2>&1
+    fi ;;
+esac
+exit 0

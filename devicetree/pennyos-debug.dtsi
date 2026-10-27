@@ -1,0 +1,49 @@
+// SPDX-License-Identifier: (GPL-2.0-only OR MIT)
+/*
+ * pennyos blind-bring-up aids. Include after the board nodes, before
+ * mt6771-mtk-lk-compat.dtsi. None of this is meant for upstream.
+ */
+
+/ {
+	chosen {
+		/*
+		 * LK asserts if /chosen/bootargs is missing - but it does NOT use this
+		 * one. It latches bootargs from the first DTB it loads (the stock `boot`
+		 * partition, before the boot menu) and prints "bootargs has been
+		 * initialized" when it later loads ours. Real arguments therefore go in
+		 * the boot.img header cmdline (tools/mkboot.sh), which LK appends.
+		 */
+		bootargs = "";
+	};
+
+	reserved-memory {
+		/*
+		 * Same region and zone layout as the vendor 4.4 kernel's ramoops
+		 * (CONFIG_PSTORE_MEM_ADDR/SIZE, record/ftrace = 4K, console = 256K,
+		 * pmsg = 64K, no ECC). After a WARM reset into Android, our console
+		 * log shows up there as /sys/fs/pstore/console-ramoops*.
+		 */
+		ramoops@54410000 {
+			compatible = "ramoops";
+			reg = <0 0x54410000 0 0xe0000>;
+			record-size = <0x1000>;
+			console-size = <0x40000>;
+			ftrace-size = <0x1000>;
+			pmsg-size = <0x10000>;
+		};
+	};
+
+	/*
+	 * The framebuffer LK leaves scanning out (base/size from LK's
+	 * atag,videolfb + mblock-7-framebuffer; geometry from affenull2345's DTS).
+	 * LK itself reserves the memory (no-map), so no reserved-memory node here.
+	 */
+	framebuffer@7df70000 {
+		compatible = "simple-framebuffer";
+		reg = <0 0x7df70000 0 0x8f7000>;
+		width = <1080>;
+		height = <2160>;
+		stride = <4352>;
+		format = "a8r8g8b8";
+	};
+};

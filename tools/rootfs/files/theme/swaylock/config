@@ -1,0 +1,25 @@
+# PennyOS swaylock - Tokyo Night
+image=/usr/local/share/pennyos/wallpaper.png
+scaling=fill
+font=Inter Variable
+# keep the ring on screen even before a key is pressed, so a locked phone does not
+# look like a frozen desktop
+indicator-idle-visible
+indicator-radius=70
+indicator-thickness=8
+inside-color=16161ecc
+ring-color=414868
+key-hl-color=7aa2f7
+bs-hl-color=f7768e
+text-color=c0caf5
+line-color=00000000
+separator-color=00000000
+inside-ver-color=16161ecc
+ring-ver-color=7aa2f7
+text-ver-color=c0caf5
+inside-wrong-color=16161ecc
+ring-wrong-color=f7768e
+text-wrong-color=f7768e
+inside-clear-color=16161ecc
+ring-clear-color=e0af68
+text-clear-color=e0af68

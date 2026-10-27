@@ -1,0 +1,57 @@
+diff --git a/drivers/gpu/drm/panel/panel-simple.c b/drivers/gpu/drm/panel/panel-simple.c
+index 9199b1903..8137bef9d 100644
+--- a/drivers/gpu/drm/panel/panel-simple.c
++++ b/drivers/gpu/drm/panel/panel-simple.c
+@@ -4736,6 +4736,42 @@ static const struct panel_desc_dsi planet_cosmocom_x800_datong = {
+ 	.lanes = 4,
+ };
+ 
++/*
++ * Planet Cosmo, Solomon SSD2092 variant. Timings from the vendor LCM driver
++ * (aeon_ssd2092_fhd_dsi_solomon): sync-pulse video mode, 4 lanes, non-continuous
++ * clock. Like the datong entry above this relies on the bootloader having
++ * initialised the panel; there is no reset/init sequence here yet.
++ */
++static const struct drm_display_mode planet_cosmocom_ssd2092_mode = {
++	.clock = 154584,
++	.hdisplay = 1080,
++	.hsync_start = 1080 + 26,
++	.hsync_end = 1080 + 26 + 4,
++	.htotal = 1080 + 26 + 4 + 20,
++	.vdisplay = 2160,
++	.vsync_start = 2160 + 76,
++	.vsync_end = 2160 + 76 + 1,
++	.vtotal = 2160 + 76 + 1 + 43,
++	.flags = DRM_MODE_FLAG_NHSYNC | DRM_MODE_FLAG_NVSYNC,
++};
++
++static const struct panel_desc_dsi planet_cosmocom_ssd2092 = {
++	.desc = {
++		.modes = &planet_cosmocom_ssd2092_mode,
++		.num_modes = 1,
++		.bpc = 8,
++		.size = {
++			.width = 68,
++			.height = 136,
++		},
++		.connector_type = DRM_MODE_CONNECTOR_DSI,
++	},
++	.flags = MIPI_DSI_MODE_VIDEO | MIPI_DSI_MODE_VIDEO_SYNC_PULSE |
++		 MIPI_DSI_CLOCK_NON_CONTINUOUS,
++	.format = MIPI_DSI_FMT_RGB888,
++	.lanes = 4,
++};
++
+ static const struct of_device_id dsi_of_match[] = {
+ 	{
+ 		.compatible = "auo,b080uan01",
+@@ -4761,6 +4797,9 @@ static const struct of_device_id dsi_of_match[] = {
+ 	}, {
+ 		.compatible = "planet,cosmocom-x800-datong-panel",
+ 		.data = &planet_cosmocom_x800_datong
++	}, {
++		.compatible = "planet,cosmocom-ssd2092-panel",
++		.data = &planet_cosmocom_ssd2092
+ 	}, {
+ 		/* sentinel */
+ 	}

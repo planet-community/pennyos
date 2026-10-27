@@ -1,0 +1,41 @@
+diff --git a/drivers/watchdog/mtk_wdt.c b/drivers/watchdog/mtk_wdt.c
+index a9c437598..5dae22f50 100644
+--- a/drivers/watchdog/mtk_wdt.c
++++ b/drivers/watchdog/mtk_wdt.c
+@@ -236,17 +236,32 @@ static int mtk_wdt_set_timeout(struct watchdog_device *wdt_dev,
+ 	return 0;
+ }
+ 
++static int mtk_wdt_start(struct watchdog_device *wdt_dev);
++
+ static void mtk_wdt_init(struct watchdog_device *wdt_dev)
+ {
+ 	struct mtk_wdt_dev *mtk_wdt = watchdog_get_drvdata(wdt_dev);
+ 	void __iomem *wdt_base;
++	u32 mode;
+ 
+ 	wdt_base = mtk_wdt->wdt_base;
+-
+-	if (readl(wdt_base + WDT_MODE) & WDT_MODE_EN) {
+-		set_bit(WDOG_HW_RUNNING, &wdt_dev->status);
++	mode = readl(wdt_base + WDT_MODE);
++	pr_info("pennyos: mtk_wdt MODE at handoff = 0x%08x (%s)\n", mode,
++		mode & WDT_MODE_EN ? "armed" : "disarmed -> arming");
++
++	if (mode & WDT_MODE_EN) {
++		/*
++		 * LK leaves the watchdog in dual / interrupt mode (0x5d). There a
++		 * reset request - a timeout, or the software reset that reboot
++		 * uses - only raises an interrupt that nothing handles here, so
++		 * the SoC never resets. Make requests reset directly.
++		 */
++		mode &= ~(WDT_MODE_IRQ_EN | WDT_MODE_DUAL_EN);
++		iowrite32(mode | WDT_MODE_KEY, wdt_base + WDT_MODE);
+ 		mtk_wdt_set_timeout(wdt_dev, wdt_dev->timeout);
+-	}
++	} else
++		mtk_wdt_start(wdt_dev);
++	set_bit(WDOG_HW_RUNNING, &wdt_dev->status);
+ }
+ 
+ static int mtk_wdt_stop(struct watchdog_device *wdt_dev)

@@ -1,0 +1,101 @@
+// Planet Cosmo Communicator - device settings and the default PennyOS look.
+// Included at the END of config.kdl (niri merges includes; later settings win), so
+// config.kdl stays close to niri's own default and this file holds what is ours.
+// Palette: Tokyo Night.
+
+// The panel is a 1080x2160 portrait panel mounted sideways in a clamshell. niri
+// already applies the panel orientation from the device tree (rotation = <270>),
+// and this transform is relative to that - so "normal" is landscape.
+output "DSI-1" {
+    transform "normal"
+    scale 1.75
+}
+
+// the keyboard layout is in keyboard.kdl (set by penny-setup)
+input {
+    touch {
+        map-to-output "DSI-1"
+    }
+}
+
+cursor {
+    xcursor-theme "Bibata-Modern-Ice"
+    xcursor-size 24
+    hide-when-typing
+}
+
+layout {
+    // gaps stay at niri's default on purpose: the screen is small
+    focus-ring {
+        width 2
+        active-color "#7aa2f7"
+        inactive-color "#414868"
+    }
+    border {
+        off
+    }
+    shadow {
+        on
+        softness 18
+        spread 2
+        offset x=0 y=4
+        color "#00000080"
+    }
+    background-color "#16161e"
+}
+
+window-rule {
+    geometry-corner-radius 8
+    clip-to-geometry true
+}
+
+// Wayland-native apps draw no title bars; the focus ring shows what is active
+prefer-no-csd
+
+gestures {
+    hot-corners {
+        top-left
+    }
+}
+
+overview {
+    backdrop-color "#16161e"
+}
+
+// the PennyOS animation, over the desktop while it loads (tap to skip; tools/splash)
+spawn-at-startup "/usr/local/bin/penny-splash"
+// holding Esc or the side button (the same signal on this phone) opens the power menu
+spawn-at-startup "/usr/local/bin/penny-hold-esc"
+// asks for the password when an app (GNOME Software, Thunar mounts) needs admin rights
+spawn-at-startup "/usr/libexec/polkit-mate-authentication-agent-1"
+spawn-at-startup "swaybg" "-m" "fill" "-i" "/usr/local/share/pennyos/wallpaper.png"
+// Idle: dim after 2 min, backlight off after 3; any key or touch brings it back.
+// before-sleep: lock before every suspend (lid, side button, power menu), so the
+// phone never wakes into an open session.
+spawn-at-startup "swayidle" "-w" "timeout" "120" "brightnessctl -q -d mt6370-backlight -s set 15%" "resume" "brightnessctl -q -d mt6370-backlight -r" "timeout" "180" "/usr/local/bin/penny-screen off" "resume" "/usr/local/bin/penny-screen on" "before-sleep" "swaylock -f"
+
+binds {
+    // Mod is the planet/Alt key. Fn is the third-level key of the xkb layout above
+    // and shows up in binds as ISO_Level3_Shift; niri matches binds on a key's base
+    // symbol, so Fn+B is "ISO_Level3_Shift+B" even though it types a brightness key.
+    Mod+Y { show-hotkey-overlay; }
+    Mod+Z { set-column-width "-10%"; }
+    Mod+X { set-column-width "+10%"; }
+
+    // Screen off/on: Fn+Esc. Esc is the Cosmo's power key but must stay usable as
+    // Esc. allow-when-locked: works on the lock screen.
+    ISO_Level3_Shift+Escape allow-when-locked=true { spawn "/usr/local/bin/penny-screen" "toggle"; }
+    // The other function legends on the keyboard: overview (A), app launcher (D),
+    // screenshot (R). Volume and media keys (C V X W E S T) are left for when audio
+    // works; the layout already sends the right XF86 symbols for them.
+    ISO_Level3_Shift+A repeat=false { toggle-overview; }
+    ISO_Level3_Shift+D repeat=false { spawn "fuzzel"; }
+    ISO_Level3_Shift+R repeat=false { screenshot; }
+    // Voice typing: Fn+Space (the microphone legend on the space bar) starts and
+    // stops listening; the words are typed into the focused window.
+    ISO_Level3_Shift+space repeat=false { spawn "/usr/local/bin/penny-dictate"; }
+    // Brightness: Fn+B / Fn+N, as printed on the keyboard.
+    // --min-value=1 keeps the bottom step from switching the backlight off.
+    ISO_Level3_Shift+N allow-when-locked=true { spawn "brightnessctl" "-q" "-d" "mt6370-backlight" "--min-value=1" "set" "+10%"; }
+    ISO_Level3_Shift+B allow-when-locked=true { spawn "brightnessctl" "-q" "-d" "mt6370-backlight" "--min-value=1" "set" "10%-"; }
+}

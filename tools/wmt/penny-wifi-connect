@@ -1,0 +1,72 @@
+#!/bin/sh
+# Wi-Fi from a terminal (the bar's Wi-Fi menu does the same with taps):
+#   penny-wifi-connect                    list the networks in range
+#   penny-wifi-connect "Network Name"     join it (asks for the passphrase, not echoed)
+#   penny-wifi-connect --forget "Name"    remove a saved network
+# Saved networks are kept in /etc/wpa_supplicant/wpa_supplicant-wlan0.conf; adding one
+# keeps the others. Run with sudo, or as a member of the `netdev` group.
+. /usr/local/lib/pennyos/wifi.sh
+
+err=$(wifi_ready) || { echo "Wi-Fi is not available: $err"; exit 1; }
+
+case "$1" in
+  "")
+    echo "searching..."
+    wifi_scan
+    TAB=$(printf '\t')
+    wifi_list | while IFS="$TAB" read -r pct sec st name; do
+      printf '%4s%%  %-5s %-10s %s\n' "$pct" "$sec" "$st" "$name"
+    done
+    echo "join one with: penny-wifi-connect \"<name>\""
+    exit 0 ;;
+  --forget)
+    [ -n "$2" ] || { echo "usage: $0 --forget \"Network Name\""; exit 1; }
+    wifi_forget "$2" && echo "forgot $2" || { echo "no saved network called \"$2\""; exit 1; }
+    exit 0 ;;
+esac
+
+SSID=$1
+printf '%s\n' "$SSID" | awk '/^[ !#-\[\]-~]+$/ {f=1} END {exit !f}' || {
+  echo "only plain ASCII names without \" or \\ are supported"; exit 1; }
+echo "searching for \"$SSID\"..."
+wifi_scan
+sec=$(wifi_list | SSID="$SSID" awk -F'\t' '$4==ENVIRON["SSID"] {print $2; exit}')
+hidden=0
+if [ -z "$sec" ]; then
+  printf '"%s" is not in range or does not broadcast its name. Try it as a hidden network? [y/N] ' "$SSID"
+  read -r a; case "$a" in y|Y|yes) hidden=1 sec=psk ;; *) exit 1 ;; esac
+fi
+case "$sec" in
+  eap) echo "enterprise Wi-Fi (user name + password) is not supported yet"; exit 1 ;;
+  wep) echo "WEP is insecure and not supported"; exit 1 ;;
+esac
+
+old=$(wifi_id "$SSID")
+if [ "$sec" = open ]; then
+  printf '"%s" has no password: anyone nearby can see your traffic. Join? [y/N] ' "$SSID"
+  read -r a; case "$a" in y|Y|yes) ;; *) exit 1 ;; esac
+  id=$(wifi_add "$SSID" open)
+else
+  printf 'Passphrase for "%s": ' "$SSID"
+  stty -echo 2>/dev/null; IFS= read -r PSK; stty echo 2>/dev/null; echo
+  n=${#PSK}
+  [ "$n" -ge 8 ] && [ "$n" -le 63 ] || { echo "a Wi-Fi passphrase has 8 to 63 characters"; exit 1; }
+  if [ "$sec" = sae ]; then case "$PSK" in *\"*|*\\*)
+    echo "a WPA3 passphrase with \" or \\ is not supported yet"; exit 1 ;; esac; fi
+  id=$(printf '%s\n' "$PSK" | wifi_add "$SSID" "$sec") || { echo "could not use that passphrase"; exit 1; }
+  unset PSK
+fi
+[ "$hidden" = 1 ] && $WIFI_CLI set_network "$id" scan_ssid 1 >/dev/null
+echo "connecting..."
+ip=$(wifi_join "$SSID" "$id"); rc=$?
+if [ $rc = 0 ]; then
+  # replaces an older entry with the same name only once the new one works
+  [ -n "$old" ] && $WIFI_CLI remove_network "$old" >/dev/null
+  wifi_save
+  echo "connected to $SSID, address $ip"
+  ping -c 1 -W 3 deb.debian.org >/dev/null 2>&1 && echo "internet: reachable" || echo "internet: not reachable yet"
+else
+  $WIFI_CLI remove_network "$id" >/dev/null
+  echo "$SSID: $(wifi_why $rc)"
+  exit 1
+fi

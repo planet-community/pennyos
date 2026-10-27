@@ -1,0 +1,37 @@
+// SPDX-License-Identifier: (GPL-2.0-only OR MIT)
+/*
+ * CPU idle states. mt6771.dtsi removes the MT8183 ones as "broken (firmware issue or
+ * misconfiguration?)". The vendor kernel's own table (live DT of the booted phone)
+ * lists these PSCI states:
+ *     standby       0x00000001   core clock-gated / retention, no context loss
+ *     mcdi-cpu      0x00010001   core power-down (same parameter as MT8183 CPU_SLEEP)
+ *     mcdi-cluster  0x01010001   cluster power-down
+ *     sodi/dpidle/suspend 0x0101000{2..5}
+ * The power-down states are coordinated with the SSPM firmware on this SoC and are
+ * the likely "broken" part, so only the shallow standby state is enabled here.
+ * Latencies are the vendor's (600 us in/out, 1200 us residency).
+ */
+/ {
+	cpus {
+		idle-states {
+			entry-method = "psci";
+
+			CPU_STANDBY: cpu-standby {
+				compatible = "arm,idle-state";
+				arm,psci-suspend-param = <0x00000001>;
+				entry-latency-us = <600>;
+				exit-latency-us = <600>;
+				min-residency-us = <1200>;
+			};
+		};
+	};
+};
+
+&cpu0 { cpu-idle-states = <&CPU_STANDBY>; };
+&cpu1 { cpu-idle-states = <&CPU_STANDBY>; };
+&cpu2 { cpu-idle-states = <&CPU_STANDBY>; };
+&cpu3 { cpu-idle-states = <&CPU_STANDBY>; };
+&cpu4 { cpu-idle-states = <&CPU_STANDBY>; };
+&cpu5 { cpu-idle-states = <&CPU_STANDBY>; };
+&cpu6 { cpu-idle-states = <&CPU_STANDBY>; };
+&cpu7 { cpu-idle-states = <&CPU_STANDBY>; };

@@ -1,0 +1,14 @@
+#!/bin/sh
+# Power menu for the top bar: lock, screen off, sleep, log out, restart, power off.
+# Restart and power off ask once more, since a stray tap is easy on a touchscreen.
+pick() { printf '%s\n' "$@" | fuzzel --dmenu --lines "$#" --width 22 --prompt "$PROMPT"; }
+PROMPT="power  " choice=$(pick "Lock" "Screen off" "Sleep" "Log out" "Restart" "Power off") || exit 0
+confirm() { PROMPT="$1?  " c=$(pick "Cancel" "$1") && [ "$c" = "$1" ]; }
+case "$choice" in
+  Lock)        swaylock -f ;;
+  "Screen off") sleep 0.5; /usr/local/bin/penny-screen off ;;
+  Sleep)       /usr/local/bin/penny-sleep ;;
+  "Log out")   confirm "Log out" && niri msg action quit --skip-confirmation ;;
+  Restart)     confirm "Restart" && systemctl reboot ;;
+  "Power off") confirm "Power off" && systemctl poweroff ;;
+esac

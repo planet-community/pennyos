@@ -1,0 +1,12 @@
+// Keyboard layout, kept apart from the rest of the config so that penny-setup can
+// rewrite it. xkb symbols "cosmo" (tools/rootfs/files/xkb): Fn types the legends
+// printed under the keys, the planet/Alt key is Mod. Only the Japanese keyboard has
+// a variant so far.
+input {
+    keyboard {
+        xkb {
+            layout "cosmo"
+            variant "jp"
+        }
+    }
+}

@@ -1,0 +1,29 @@
+#!/bin/sh
+# Screen power for the Cosmo: penny-screen off | on | toggle
+#
+# Under niri this powers the whole display down (panel in reset, DSI and the display
+# pipeline stopped, backlight off) and back up; the panel driver re-initialises the
+# panel and the touch controller on the way back. Any key press also wakes it.
+# Without a niri session it falls back to switching the backlight only.
+BL=/sys/class/backlight/mt6370-backlight
+STATE="${XDG_RUNTIME_DIR:-/tmp}/penny-screen.brightness"
+
+if [ -n "$NIRI_SOCKET" ] && command -v niri >/dev/null; then
+  dpms=$(cat /sys/class/drm/card*-DSI-1/dpms 2>/dev/null)
+  off() { niri msg action power-off-monitors; }
+  on()  { niri msg action power-on-monitors; }
+  is_on() { [ "$dpms" = On ]; }
+else
+  cur=$(cat $BL/brightness)
+  off() { [ "$cur" -gt 0 ] && echo "$cur" > "$STATE"; brightnessctl -q -d mt6370-backlight set 0; }
+  on()  { v=$(cat "$STATE" 2>/dev/null); [ -n "$v" ] && [ "$v" -gt 0 ] || v=$(( $(cat $BL/max_brightness) / 2 )); brightnessctl -q -d mt6370-backlight set "$v"; }
+  is_on() { [ "$cur" -gt 0 ]; }
+fi
+
+case "$1" in
+  off) is_on && off ;;
+  on) is_on || on ;;
+  toggle|"") if is_on; then off; else on; fi ;;
+  *) echo "usage: $0 off|on|toggle"; exit 1 ;;
+esac
+exit 0

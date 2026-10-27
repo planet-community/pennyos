@@ -1,0 +1,46 @@
+diff --git a/drivers/input/keyboard/gpio_fastmatrix.c b/drivers/input/keyboard/gpio_fastmatrix.c
+--- a/drivers/input/keyboard/gpio_fastmatrix.c
++++ b/drivers/input/keyboard/gpio_fastmatrix.c
+@@ -276,6 +276,27 @@
+ 	gkb->scan_pending = false;
+ 	enable_row_irqs(gkb);
+ 	mutex_unlock(&gkb->lock);
++
++	/*
++	 * pennyos: a key that went down while this scan ran (after its column was
++	 * read) or before the row interrupts were back on raises no interrupt that
++	 * reaches us: the expander only reports changes since its last read, and the
++	 * scan's own reads consumed it. Look once more with every column driven, so
++	 * such a key is picked up now instead of on its next press.
++	 */
++	if (!gkb->stopped &&
++	    !gpiod_get_array_value_cansleep(gkb->row_gpios->ndescs,
++					    gkb->row_gpios->desc,
++					    gkb->row_gpios->info, &row_values) &&
++	    (row_values & GENMASK(gkb->row_gpios->ndescs - 1, 0))) {
++		mutex_lock(&gkb->lock);
++		if (!gkb->scan_pending && !gkb->stopped) {
++			disable_row_irqs(gkb);
++			gkb->scan_pending = true;
++			mod_delayed_work(system_highpri_wq, &gkb->work, 0);
++		}
++		mutex_unlock(&gkb->lock);
++	}
+ }
+ 
+ static irqreturn_t gpio_keyboard_interrupt(int irq, void *id)
+@@ -287,11 +308,12 @@
+ 	 * scan already. In that case we should not try to
+ 	 * disable IRQs again.
+ 	 */
++	mutex_lock(&gkb->lock);
++
++	/* pennyos: checked under the lock (the "out" path unlocks it) */
+ 	if (unlikely(gkb->scan_pending || gkb->stopped))
+ 		goto out;
+ 
+-	mutex_lock(&gkb->lock);
+-
+ 	disable_row_irqs(gkb);
+ 	gkb->scan_pending = true;
+ 	mod_delayed_work(system_highpri_wq, &gkb->work,

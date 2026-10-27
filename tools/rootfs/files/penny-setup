@@ -1,0 +1,153 @@
+#!/bin/sh
+# First-time setup for the Cosmo: host name, time zone, language, keyboard layout,
+# user name and password. Run it in a terminal (or over SSH / the serial console):
+#
+#   penny-setup
+#
+# Every question shows the current value in [brackets]; Enter keeps it. Nothing is
+# changed until a question is answered, and it can be run again at any time.
+[ "$(id -u)" = 0 ] || exec sudo "$0" "$@"
+
+ME="${SUDO_USER:-$(id -nu 1000 2>/dev/null)}"
+[ -n "$ME" ] && [ "$ME" != root ] || ME=cosmo
+home_of() { getent passwd "$1" | cut -d: -f6; }
+
+b=$(printf '\033[1m'); n=$(printf '\033[0m')
+title() { printf '\n%s%s%s\n' "$b" "$1" "$n"; }
+ask() { # ask <question> <current value>  -> answer in $REPLY (current value on Enter)
+  printf '%s [%s]: ' "$1" "$2"; read -r REPLY || exit 1
+  [ -n "$REPLY" ] || REPLY=$2
+}
+confirm() { # confirm <question> <default y|n>
+  ask "$1 (y/n)" "$2"; case "$REPLY" in y|Y|yes) return 0 ;; *) return 1 ;; esac
+}
+
+printf '%sPennyOS setup%s - Enter keeps the value in [brackets]\n' "$b" "$n"
+
+# ---- host name ----
+title "Name of this device"
+cur=$(cat /etc/hostname 2>/dev/null); cur=${cur:-pennyos}
+while :; do
+  ask "Host name" "$cur"
+  echo "$REPLY" | grep -Eq '^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$' && break
+  echo "  lower-case letters, digits and '-' only"
+done
+if [ "$REPLY" != "$cur" ]; then
+  echo "$REPLY" > /etc/hostname
+  hostname "$REPLY" 2>/dev/null
+  if grep -q '^127\.0\.1\.1' /etc/hosts 2>/dev/null; then sed -i "s/^127\.0\.1\.1.*/127.0.1.1\t$REPLY/" /etc/hosts
+  else printf '127.0.1.1\t%s\n' "$REPLY" >> /etc/hosts; fi
+  echo "  host name is now $REPLY"
+fi
+
+# ---- time zone ----
+title "Time zone"
+Z=/usr/share/zoneinfo
+cur=$(readlink /etc/localtime 2>/dev/null | sed "s#.*zoneinfo/##"); cur=${cur:-Etc/UTC}
+echo "  e.g. Europe/London, America/New_York, Asia/Tokyo - or part of a name to search"
+while :; do
+  ask "Time zone" "$cur"
+  [ -f "$Z/$REPLY" ] && break
+  found=$(cd $Z && find . -type f -ipath "*$REPLY*" ! -path './posix/*' ! -path './right/*' | sed 's#^\./##' | grep '/' | sort | head -30)
+  if [ -n "$found" ] && [ "$(echo "$found" | wc -l)" = 1 ]; then REPLY=$found; break; fi
+  [ -n "$found" ] && echo "$found" | sed 's/^/    /' || echo "  no time zone matches '$REPLY'"
+done
+if [ "$REPLY" != "$cur" ]; then
+  ln -sf "$Z/$REPLY" /etc/localtime; echo "$REPLY" > /etc/timezone
+  echo "  time zone is now $REPLY: $(date)"
+fi
+
+# ---- language ----
+title "Language and formats (locale)"
+SUP=/usr/share/i18n/SUPPORTED
+cur=$(. /etc/default/locale 2>/dev/null; echo "${LANG:-C.UTF-8}")
+if [ ! -f $SUP ] || ! command -v locale-gen >/dev/null; then
+  echo "  the 'locales' package is not installed - skipping (apt install locales)"
+else
+  echo "  e.g. en_GB, en_US, de_DE, fr_FR, ja_JP - or part of a name to search"
+  while :; do
+    ask "Locale" "$cur"
+    [ "$REPLY" = "$cur" ] && break
+    want=${REPLY%%.*}.UTF-8
+    grep -q "^$want UTF-8" $SUP && { REPLY=$want; break; }
+    found=$(grep -i "^[^ ]*${REPLY%%.*}[^ ]*\.UTF-8 " $SUP | cut -d' ' -f1 | head -30)
+    [ -n "$found" ] && echo "$found" | sed 's/^/    /' || echo "  no locale matches '$REPLY'"
+  done
+  if [ "$REPLY" != "$cur" ] || ! locale -a 2>/dev/null | grep -qix "$(echo "$REPLY" | sed 's/UTF-8/utf8/')"; then
+    if [ "$REPLY" != C.UTF-8 ]; then
+      grep -q "^$REPLY UTF-8" /etc/locale.gen 2>/dev/null || echo "$REPLY UTF-8" >> /etc/locale.gen
+      locale-gen >/dev/null && echo "  generated $REPLY"
+    fi
+    update-locale "LANG=$REPLY"
+    echo "  locale is now $REPLY (from the next login)"
+  fi
+fi
+
+# ---- keyboard ----
+# The layout lives in keyboard.kdl next to the niri config: one copy for the login
+# screen and one per user.
+title "Keyboard layout"
+kdl_of() { h=$(home_of "$1"); echo "$h/.config/niri/keyboard.kdl"; }
+cur=$(sed -n 's/.*layout "\(.*\)".*/\1/p' "$(kdl_of "$ME")" 2>/dev/null | head -1)
+var=$(sed -n 's/.*variant "\(.*\)".*/\1/p' "$(kdl_of "$ME")" 2>/dev/null | head -1)
+[ "$cur" = cosmo ] && cur="cosmo-$var"; cur=${cur:-cosmo-jp}
+echo "  cosmo-jp   Cosmo Japanese keyboard, with the Fn legends printed on the keys"
+echo "  us, gb, de, fr, ...   a standard layout. The Fn legends and Fn shortcuts"
+echo "             (brightness, voice typing, ...) only exist for cosmo-jp so far."
+LST=/usr/share/X11/xkb/rules/base.lst
+while :; do
+  ask "Keyboard" "$cur"
+  case "$REPLY" in
+    cosmo-*) grep -q "xkb_symbols \"${REPLY#cosmo-}\"" /usr/share/X11/xkb/symbols/cosmo 2>/dev/null && break
+             echo "  there is no Cosmo layout '${REPLY#cosmo-}'" ;;
+    *) [ -f "/usr/share/X11/xkb/symbols/$REPLY" ] && echo "$REPLY" | grep -Eq '^[a-z]+$' && break
+       found=$(sed -n '/^! layout/,/^$/p' $LST 2>/dev/null | grep -i "$REPLY" | head -20)
+       [ -n "$found" ] && echo "$found" || echo "  no layout matches '$REPLY'" ;;
+  esac
+done
+if [ "$REPLY" != "$cur" ] || [ ! -f "$(kdl_of "$ME")" ]; then
+  case "$REPLY" in cosmo-*) L=cosmo V=${REPLY#cosmo-} ;; *) L=$REPLY V= ;; esac
+  write_kdl() {
+    printf '// Keyboard layout. Written by penny-setup; run it again to change.\ninput {\n    keyboard {\n        xkb {\n            layout "%s"\n            variant "%s"\n        }\n    }\n}\n' "$L" "$V" > "$1"
+  }
+  [ -d /etc/greetd ] && write_kdl /etc/greetd/keyboard.kdl
+  f=$(kdl_of "$ME"); [ -d "$(dirname "$f")" ] && { write_kdl "$f"; chown "$ME:" "$f"; }
+  echo "  keyboard is now $REPLY (the desktop picks it up at once, the login screen at the next start)"
+fi
+
+# ---- user ----
+title "User"
+while :; do
+  ask "User name" "$ME"
+  echo "$REPLY" | grep -Eq '^[a-z][a-z0-9_-]{0,31}$' || { echo "  lower-case letters, digits, '-' and '_', starting with a letter"; continue; }
+  [ "$REPLY" = "$ME" ] && break
+  id "$REPLY" >/dev/null 2>&1 && { echo "  '$REPLY' already exists"; continue; }
+  break
+done
+NEW=$REPLY
+if [ "$NEW" != "$ME" ]; then
+  # A logged-in user cannot be renamed, so make a new account like the current one:
+  # same groups, same desktop settings, same SSH keys.
+  groups=$(id -nG "$ME" | tr ' ' '\n' | grep -vx "$ME" | paste -sd,)
+  useradd -m -s /bin/bash -G "$groups" "$NEW" || exit 1
+  old=$(home_of "$ME"); new=$(home_of "$NEW")
+  for f in .profile .config/niri .config/waybar .config/fuzzel .config/mako .config/foot \
+           .config/swaylock .config/gtk-3.0 .config/gtk-4.0 .ssh/authorized_keys; do
+    [ -e "$old/$f" ] || continue
+    mkdir -p "$new/$(dirname "$f")" && cp -a "$old/$f" "$new/$(dirname "$f")/"
+  done
+  [ -d "$new/.ssh" ] && chmod 700 "$new/.ssh"
+  chown -R "$NEW:" "$new"
+  echo "  created $NEW (groups: $groups)"
+  until passwd "$NEW"; do :; done
+  if confirm "Disable the old account '$ME'? Its files stay in $old" y; then
+    usermod -L -e 1 "$ME" && echo "  '$ME' can no longer log in (undo: sudo usermod -U -e '' $ME)"
+  fi
+  echo "  log out, or restart, and log in as $NEW"
+elif confirm "Change the password of $ME?" y; then
+  until passwd "$ME"; do :; done
+fi
+
+title "Done"
+confirm "Restart now, so everything takes effect?" n && systemctl reboot
+exit 0

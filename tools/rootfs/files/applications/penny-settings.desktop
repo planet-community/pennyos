@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=Settings
+Comment=Wi-Fi, printers, file manager and power settings
+Exec=/usr/local/bin/penny-settings
+Icon=preferences-system
+Terminal=false
+Categories=Settings;
+Keywords=preferences;wifi;network;printer;print;power;configuration;

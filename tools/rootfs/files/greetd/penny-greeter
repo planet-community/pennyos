@@ -1,0 +1,12 @@
+#!/bin/sh
+# Started by greetd as the _greetd user: a niri with nothing but the greeter in it.
+export XDG_CURRENT_DESKTOP=niri
+export GTK_THEME=Adwaita:dark
+# The greeter session has no desktop portal, accessibility bus or gvfs; without
+# these GTK waits on each of them before drawing the login box.
+export GTK_USE_PORTAL=0
+export GDK_DEBUG=no-portals
+export NO_AT_BRIDGE=1
+export GIO_USE_VFS=local
+export GSETTINGS_BACKEND=memory
+exec /usr/local/bin/niri -c /etc/greetd/niri-greeter.kdl >/dev/null 2>&1

@@ -1,0 +1,11 @@
+# System-wide defaults so GTK4/libadwaita apps (GNOME Software, ...) come up dark
+# and with the same icons, cursor and font as the rest of the desktop.
+# Icons are Adwaita, not Papirus: GTK 4.18 recurses until it overflows its stack
+# looking up icons in Papirus-Dark, which takes GNOME Software down at start-up.
+# The launcher (fuzzel) has its own setting and keeps Papirus.
+[org/gnome/desktop/interface]
+color-scheme='prefer-dark'
+gtk-theme='Adwaita-dark'
+icon-theme='Adwaita'
+cursor-theme='Bibata-Modern-Ice'
+font-name='Inter Variable 11'

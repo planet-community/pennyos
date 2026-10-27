@@ -1,0 +1,18 @@
+[Unit]
+Description=Planet Cosmo built-in radio (consys): control layer + Wi-Fi
+Documentation=file:///usr/local/bin/penny-conn-up
+After=systemd-modules-load.service
+# Deliberately not ordered before network.target: bringing the radio up takes about
+# nine seconds and the login screen (ordered after network.target) would wait for
+# it. wpa_supplicant is started by udev when wlan0 appears (92-pennyos-wifi.rules).
+ConditionPathExists=/opt/pennyos/conn/wmt_drv.ko
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+# penny-wmtd (started by the script) must keep running to serve the driver
+KillMode=none
+ExecStart=/usr/local/bin/penny-conn-up wifi
+
+[Install]
+WantedBy=multi-user.target

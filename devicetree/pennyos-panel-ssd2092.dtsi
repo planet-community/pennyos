@@ -1,0 +1,29 @@
+// SPDX-License-Identifier: (GPL-2.0-only OR MIT)
+/*
+ * The Cosmo shipped with (at least) two main-panel variants. LK probes
+ * "aeon_nt36672_fhd_dsi_vdo_x800_datong" first, then "aeon_ssd2092_fhd_dsi_solomon";
+ * the board DTS describes the former. This unit has the Solomon SSD2092 one
+ * (LK log: "we will use lcm: aeon_ssd2092_fhd_dsi_solomon", id 0x01572098).
+ * LK also reports the choice to the kernel in /chosen "atag,videolfb".
+ */
+&panel {
+	/*
+	 * "planet,cosmocom-ssd2092" is our own driver (kernel/drivers/
+	 * panel-planet-ssd2092.c): it resets and initialises the panel itself.
+	 * "planet,cosmocom-ssd2092-panel" (panel-simple, kernel patch 0004) is the
+	 * fallback that depends on the bootloader's setup and cannot power-cycle.
+	 * LCM reset is GPIO45.
+	 */
+	compatible = "planet,cosmocom-ssd2092";
+	reset-gpios = <&pio 45 GPIO_ACTIVE_LOW>;
+};
+
+/*
+ * Android's brightness slider at maximum programs the MT6370 to 767 of 2047
+ * (registers 0xa4/0xa5 = 0x07/0x5f, read on the phone). Running the LEDs at the
+ * chip's full scale costs about 950 mA from the battery, so use Android's ceiling.
+ */
+&mt6370_backlight {
+	max-brightness = <767>;
+	default-brightness = <384>;
+};

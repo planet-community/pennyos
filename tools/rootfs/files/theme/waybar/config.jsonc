@@ -1,0 +1,64 @@
+// PennyOS waybar for niri on the Cosmo (2160x1080 @ 1.75x -> 1234 logical px wide).
+// 40 px tall so the buttons are touch targets (~4.4 mm on this panel).
+{
+    "layer": "top",
+    "position": "top",
+    "height": 40,
+    "spacing": 0,
+    "modules-left": ["custom/launcher", "niri/workspaces", "niri/window"],
+    "modules-center": ["clock"],
+    "modules-right": ["network", "custom/battery", "custom/overview", "custom/close", "custom/power"],
+
+    "custom/launcher": {
+        "format": "",
+        "tooltip": false,
+        "on-click": "fuzzel"
+    },
+    "niri/workspaces": {
+        "format": "{index}"
+    },
+    "niri/window": {
+        "format": "{title}",
+        "max-length": 48,
+        "separate-outputs": true
+    },
+    "clock": {
+        "format": "{:%H:%M}",
+        "format-alt": "{:%a %d %b  %H:%M}",
+        "tooltip": false
+    },
+    "network": {
+        // a plain Wi-Fi icon (Font Awesome "wifi"), dimmed when not connected; tap for
+        // signal, address and the network list (penny-wifi-menu)
+        "format-wifi": "\uf1eb",
+        "format-ethernet": "\uf1eb",
+        "format-disconnected": "\uf1eb",
+        "format-linked": "\uf1eb",
+        "tooltip-format-wifi": "{essid}  {signalStrength}%  {ipaddr}",
+        "tooltip-format-disconnected": "Wi-Fi: not connected",
+        "on-click": "/usr/local/bin/penny-wifi-menu",
+        "interface": "wlan0"
+    },
+    "custom/battery": {
+        "exec": "/usr/local/bin/penny-bar-battery",
+        "return-type": "json",
+        "interval": 30
+    },
+    "custom/overview": {
+        "format": "",
+        "tooltip": false,
+        "on-click": "niri msg action toggle-overview"
+    },
+    "custom/close": {
+        "exec": "/usr/local/bin/penny-bar-close",
+        "return-type": "json",
+        "tooltip": false,
+        "on-click": "niri msg action close-window"
+    },
+    "custom/power": {
+        // Font Awesome "power-off"
+        "format": "\uf011",
+        "tooltip": false,
+        "on-click": "/usr/local/bin/penny-power-menu"
+    }
+}

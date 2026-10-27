@@ -1,0 +1,38 @@
+// SPDX-License-Identifier: (GPL-2.0-only OR MIT)
+/*
+ * Lid sensor: a Hall sensor on GPIO8 (vendor DrvGen worksheet k71v1_64_bsp.dws),
+ * high with the lid open, so active low. Verified on the phone.
+ *
+ * The side button is NOT here: GPIO11 ("fingerprint key" in the worksheet) never
+ * moves. Side button and Esc key both arrive as the PMIC power key and no other
+ * SoC pin follows either of them (all pins watched during presses).
+ */
+#include <dt-bindings/input/input.h>
+
+/ {
+	cosmo-gpio-keys {
+		compatible = "gpio-keys";
+		pinctrl-names = "default";
+		pinctrl-0 = <&cosmo_gpio_keys_pins>;
+
+		switch-lid {
+			label = "Lid";
+			gpios = <&pio 8 GPIO_ACTIVE_LOW>;
+			linux,input-type = <EV_SW>;
+			linux,code = <SW_LID>;
+			debounce-interval = <50>;
+			wakeup-source;
+		};
+
+	};
+};
+
+&pio {
+	cosmo_gpio_keys_pins: cosmo-gpio-keys-pins {
+		pins {
+			pinmux = <PINMUX_GPIO8__FUNC_GPIO8>;
+			input-enable;
+			bias-pull-up;
+		};
+	};
+};

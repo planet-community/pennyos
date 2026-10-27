@@ -1,0 +1,18 @@
+diff --git a/drivers/regulator/core.c b/drivers/regulator/core.c
+index d8e1caaf2..cbdafdf40 100644
+--- a/drivers/regulator/core.c
++++ b/drivers/regulator/core.c
+@@ -6240,6 +6240,13 @@ static int regulator_late_cleanup(struct device *dev, void *data)
+ 
+ static void regulator_init_complete_work_function(struct work_struct *work)
+ {
++	/*
++	 * pennyos (debug only): never switch off "unused" regulators. Most of
++	 * the board is not described yet, so unused does not mean unneeded.
++	 */
++	pr_info("pennyos: leaving unused regulators enabled\n");
++	return;
++
+ 	/*
+ 	 * Regulators may had failed to resolve their input supplies
+ 	 * when were registered, either because the input supply was

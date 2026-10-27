@@ -1,0 +1,3 @@
+# Keep the charger's current limits in step with the Type-C port (see penny-charge-setup)
+ACTION=="add|change", SUBSYSTEM=="power_supply", KERNEL=="mt6370-charger", RUN+="/usr/local/bin/penny-charge-setup"
+ACTION=="add|change", SUBSYSTEM=="power_supply", KERNEL=="tcpm-source-psy-*", RUN+="/usr/local/bin/penny-charge-setup"

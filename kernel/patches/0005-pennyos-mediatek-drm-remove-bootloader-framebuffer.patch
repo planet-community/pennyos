@@ -1,0 +1,26 @@
+diff --git a/drivers/gpu/drm/mediatek/mtk_drm_drv.c b/drivers/gpu/drm/mediatek/mtk_drm_drv.c
+index 6dcb4ba24..1bd345540 100644
+--- a/drivers/gpu/drm/mediatek/mtk_drm_drv.c
++++ b/drivers/gpu/drm/mediatek/mtk_drm_drv.c
+@@ -13,6 +13,7 @@
+ #include <linux/dma-mapping.h>
+ 
+ #include <drm/drm_atomic.h>
++#include <drm/drm_aperture.h>
+ #include <drm/drm_atomic_helper.h>
+ #include <drm/drm_drv.h>
+ #include <drm/drm_fbdev_generic.h>
+@@ -606,6 +607,13 @@ static int mtk_drm_bind(struct device *dev)
+ 
+ 	private->drm_master = true;
+ 	drm->dev_private = private;
++
++	/*
++	 * pennyos: take over from the bootloader framebuffer (simple-framebuffer)
++	 * so that fbcon follows us to the DRM fbdev instead of staying on a buffer
++	 * that is no longer scanned out.
++	 */
++	drm_aperture_remove_framebuffers(&mtk_drm_driver);
+ 	for (i = 0; i < private->data->mmsys_dev_num; i++)
+ 		private->all_drm_private[i]->drm = drm;
+ 

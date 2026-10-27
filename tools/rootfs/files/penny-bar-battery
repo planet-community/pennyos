@@ -1,0 +1,18 @@
+#!/bin/sh
+# waybar custom module: battery voltage and charging state.
+# There is no fuel-gauge driver on mainline yet, so no true percentage: show the cell
+# voltage (from the MT6370 ADC) and a rough level from it, flagged as an estimate.
+d=$(grep -l mt6370-adc /sys/bus/iio/devices/iio:device*/name 2>/dev/null | head -1 | xargs -r dirname)
+[ -n "$d" ] || { echo '{"text":"","tooltip":"no battery data"}'; exit 0; }
+raw=$(cat "$d/in_voltage3_raw" 2>/dev/null) || exit 0
+mv=$((raw * 5))
+st=$(cat /sys/class/power_supply/mt6370-charger/status 2>/dev/null)
+on=$(cat /sys/class/power_supply/mt6370-charger/online 2>/dev/null)
+# open-circuit-ish estimate, 3.40 V = 0 %, 4.20 V = 100 %; reads high while charging
+pct=$(( (mv - 3400) * 100 / 800 )); [ $pct -lt 0 ] && pct=0; [ $pct -gt 100 ] && pct=100
+if [ "$on" = 1 ] && [ "$st" = Charging ]; then icon=""; cls=charging
+elif [ $pct -le 15 ]; then icon=""; cls=low
+elif [ $pct -le 50 ]; then icon=""; cls=normal
+else icon=""; cls=normal; fi
+printf '{"text":"%s  %d%%","tooltip":"%d.%02d V  %s  (estimated from voltage)","class":"%s"}\n' \
+  "$icon" "$pct" $((mv / 1000)) $(((mv % 1000) / 10)) "${st:-unknown}" "$cls"

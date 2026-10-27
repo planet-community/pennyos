@@ -1,0 +1,68 @@
+#!/bin/sh
+# Voice typing for the Cosmo: Fn+Space starts listening, Fn+Space again stops, and
+# what was said is typed into the focused window.
+#
+# Recording: built-in microphone through the MT6358 codec (card "cosmo", see
+# kernel/drivers/cosmo-sound.c). Recognition runs on the phone with whisper.cpp
+# (tools/rootfs/build-whisper.sh); nothing leaves the device. The text is typed
+# with wtype.
+#
+#   penny-dictate            toggle
+#   penny-dictate cancel     stop listening and throw the recording away
+RUN="${XDG_RUNTIME_DIR:-/tmp}"
+WAV="$RUN/penny-dictate.wav"
+PID="$RUN/penny-dictate.pid"
+MODEL="${PENNY_DICTATE_MODEL:-tiny.en}"
+# the four fast cores; using all eight is no quicker
+THREADS="${PENNY_DICTATE_THREADS:-4}"
+MAX_SECONDS=120
+
+find_first() { for f in "$@"; do [ -e "$f" ] && { echo "$f"; return; }; done; }
+WHISPER=$(find_first "$HOME/.local/bin/whisper-cli" /usr/local/bin/whisper-cli)
+MODEL_FILE=$(find_first "$HOME/.local/share/whisper/ggml-$MODEL.bin" "/usr/local/share/pennyos/whisper/ggml-$MODEL.bin")
+say() { notify-send -t "${2:-2000}" -h string:x-canonical-private-synchronous:penny-dictate "Voice typing" "$1" 2>/dev/null; }
+
+mic_on() {
+  # main microphone -> left preamplifier -> left ADC -> capture channel 1
+  m() { amixer -q -c cosmo cset name="$1" "$2"; }
+  m "Mic Type Mux" ACC && m "PGA L Mux" AIN0 && m "ADC L Mux" "Left Preamplifier" &&
+    m "PGA Volume" "${PENNY_DICTATE_GAIN:-3},0" && m "UL1_CH1 ADDA_UL_CH1" 1
+}
+
+recording() { [ -s "$PID" ] && kill -0 "$(cat "$PID")" 2>/dev/null; }
+
+stop_recording() {
+  p=$(cat "$PID"); rm -f "$PID"
+  kill -INT "$p" 2>/dev/null
+  n=0; while kill -0 "$p" 2>/dev/null && [ $n -lt 20 ]; do sleep 0.1; n=$((n + 1)); done
+}
+
+case "$1" in
+  cancel)
+    recording && { stop_recording; rm -f "$WAV"; say "Cancelled"; }
+    exit 0 ;;
+esac
+
+if ! recording; then
+  [ -n "$WHISPER" ] && [ -n "$MODEL_FILE" ] || { say "Speech recognition is not installed" 4000; exit 1; }
+  mic_on || { say "No microphone" 4000; exit 1; }
+  rm -f "$WAV"
+  arecord -q -D plughw:cosmo,1 -f S16_LE -r 16000 -c 1 -d "$MAX_SECONDS" "$WAV" 2>/dev/null &
+  echo $! > "$PID"
+  say "Listening... (Fn+Space to finish)" $((MAX_SECONDS * 1000))
+  exit 0
+fi
+
+stop_recording
+[ -s "$WAV" ] || { say "Nothing recorded" 3000; exit 1; }
+say "Transcribing..." 60000
+# Whisper always works on a 30 s window; for a shorter clip, shrink the window to the
+# clip (50 positions per second, plus a margin). Much faster for a sentence or two.
+bytes=$(wc -c < "$WAV")
+ctx=$(( (bytes - 44) / 32000 * 50 + 150 )); [ "$ctx" -gt 1500 ] && ctx=1500
+text=$("$WHISPER" -m "$MODEL_FILE" -t "$THREADS" -ac "$ctx" -nt -np -f "$WAV" 2>/dev/null |
+  tr '\n' ' ' | sed -e 's/\[[A-Za-z_ ]*\]//g' -e 's/([a-z ]*)//g' -e 's/  */ /g' -e 's/^ //' -e 's/ $//')
+rm -f "$WAV"
+if [ -z "$text" ]; then say "Heard nothing" 3000; exit 0; fi
+say "$text" 1500
+wtype -- "$text "

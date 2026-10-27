@@ -1,0 +1,43 @@
+// SPDX-License-Identifier: (GPL-2.0-only OR MIT)
+/*
+ * Sound card: SoC audio front end + MT6358 codec (kernel/drivers/cosmo-sound.c).
+ *
+ * GPIO136..143 are the two-way digital audio link to the PMIC (same pins as the
+ * MT8183 boards; vendor worksheet lists them as the "PMIC audio bus").
+ *
+ * Speaker amplifier enables and headphone switches, from the vendor device tree
+ * (extamp GPIO153, extamp2 GPIO111, headphone_en GPIO108, headphone_cs GPIO107);
+ * all off/low at start, as on Android when nothing is playing.
+ */
+#include <dt-bindings/gpio/gpio.h>
+/ {
+	cosmo-sound {
+		compatible = "planet,cosmo-sound";
+		mediatek,platform = <&afe>;
+		pinctrl-names = "default";
+		pinctrl-0 = <&cosmo_aud_pins>;
+		ext-amp-gpios = <&pio 153 GPIO_ACTIVE_HIGH>;
+		ext-amp2-gpios = <&pio 111 GPIO_ACTIVE_HIGH>;
+		hp-en-gpios = <&pio 108 GPIO_ACTIVE_HIGH>;
+		hp-cs-gpios = <&pio 107 GPIO_ACTIVE_HIGH>;
+	};
+};
+
+&mt6358codec {
+	Avdd-supply = <&mt6358_vaud28_reg>;
+};
+
+&pio {
+	cosmo_aud_pins: cosmo-aud-pins {
+		pins-bus {
+			pinmux = <PINMUX_GPIO136__FUNC_AUD_CLK_MOSI>,
+				 <PINMUX_GPIO137__FUNC_AUD_SYNC_MOSI>,
+				 <PINMUX_GPIO138__FUNC_AUD_DAT_MOSI0>,
+				 <PINMUX_GPIO139__FUNC_AUD_DAT_MOSI1>,
+				 <PINMUX_GPIO140__FUNC_AUD_CLK_MISO>,
+				 <PINMUX_GPIO141__FUNC_AUD_SYNC_MISO>,
+				 <PINMUX_GPIO142__FUNC_AUD_DAT_MISO0>,
+				 <PINMUX_GPIO143__FUNC_AUD_DAT_MISO1>;
+		};
+	};
+};

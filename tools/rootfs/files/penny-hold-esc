@@ -1,0 +1,24 @@
+#!/bin/sh
+# Holding Esc (or the side button) opens the power menu.
+#
+# On the Cosmo the Esc key and the side button are one signal: the PMIC power key,
+# which we report as Esc. They cannot be told apart, so a short press stays Esc and
+# a hold of at least HOLD_MS becomes "power". The menu opens on release, because a
+# held Esc auto-repeats and would close the menu again at once.
+# Started with the niri session; needs the `input` group to read the key device.
+DEV=/dev/input/by-path/platform-mt6358-keys-event
+HOLD_MS=${HOLD_MS:-700}
+[ -e "$DEV" ] || exit 0
+down=
+evtest "$DEV" 2>/dev/null | while read -r _ _ t _ _ _ _ code name _ val; do
+  # Event: time 1791403088.076745, type 1 (EV_KEY), code 1 (KEY_ESC), value 1
+  [ "$name" = "(KEY_ESC)," ] || continue
+  t=${t%,}; ms=$(( ${t%.*} * 1000 + 1${t#*.} / 1000 - 1000 ))
+  case "$val" in
+    1) down=$ms ;;
+    0) if [ -n "$down" ] && [ $((ms - down)) -ge "$HOLD_MS" ]; then
+         pgrep -x fuzzel >/dev/null || /usr/local/bin/penny-power-menu &
+       fi
+       down= ;;
+  esac
+done

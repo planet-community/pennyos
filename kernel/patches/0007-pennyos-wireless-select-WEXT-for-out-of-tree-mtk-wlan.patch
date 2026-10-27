@@ -1,0 +1,21 @@
+diff --git a/net/wireless/Kconfig b/net/wireless/Kconfig
+index f620acd2a..53eda2972 100644
+--- a/net/wireless/Kconfig
++++ b/net/wireless/Kconfig
+@@ -2,6 +2,16 @@
+ config WIRELESS_EXT
+ 	bool
+ 
++config MTK_WLAN_GEN3_WEXT
++	bool "Wireless extensions for the out-of-tree MediaTek wlan gen3 driver"
++	depends on CFG80211
++	select WIRELESS_EXT
++	select WEXT_PRIV
++	help
++	  pennyos: WIRELESS_EXT and WEXT_PRIV have no prompt and can only be
++	  selected by a driver. The vendor Wi-Fi driver for the Planet Cosmo is
++	  built out of tree, so select them here on its behalf.
++
+ config WEXT_CORE
+ 	def_bool y
+ 	depends on CFG80211_WEXT || WIRELESS_EXT

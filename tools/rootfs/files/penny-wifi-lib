@@ -1,0 +1,140 @@
+# Shared Wi-Fi functions for penny-wifi-menu (bar) and penny-wifi-connect (terminal).
+# Installed as /usr/local/lib/pennyos/wifi.sh and sourced, not run. Talks to
+# wpa_supplicant on wlan0 through wpa_cli; needs root or the `netdev` group.
+#
+# Limits, on purpose:
+#  - network names: plain printable ASCII without " or \ only. wpa_cli prints other
+#    names escaped, and we do not guess at decoding them.
+#  - a passphrase never appears on a command line (it goes through stdin)
+#  - personal networks only (password, or open after an explicit yes); enterprise
+#    (user name + password) and WEP networks are refused with a message
+WIFI_IF=wlan0
+WIFI_CLI="/usr/sbin/wpa_cli -i $WIFI_IF"   # sbin is not on a normal user's PATH
+WIFI_CONF=/etc/wpa_supplicant/wpa_supplicant-wlan0.conf
+
+wifi_has_link() { ip link show "$WIFI_IF" >/dev/null 2>&1; }
+wifi_cli_ok() { $WIFI_CLI ping 2>/dev/null | grep -q PONG; }
+
+# Make sure the radio is on and wpa_supplicant answers. Starting the units works
+# for root and, through /etc/polkit-1/rules.d/50-pennyos-wifi.rules, for `netdev`.
+# Prints why on failure.
+wifi_ready() {
+  if [ "$(id -u)" != 0 ] && ! id -nG | tr ' ' '\n' | grep -qx netdev; then
+    echo "your account is not in the netdev group (sudo usermod -aG netdev $(id -un), then log in again)"
+    return 1
+  fi
+  if ! wifi_has_link; then
+    systemctl start penny-conn.service 2>/dev/null
+    i=0; until wifi_has_link || [ $i -ge 20 ]; do sleep 1; i=$((i + 1)); done
+    wifi_has_link || { echo "the Wi-Fi radio did not start (journalctl -u penny-conn)"; return 1; }
+  fi
+  # a fresh install had no config file, and wpa_supplicant will not start without one
+  if [ ! -f "$WIFI_CONF" ] && [ "$(id -u)" = 0 ]; then
+    install -D -m 600 /dev/null "$WIFI_CONF"
+    printf 'ctrl_interface=DIR=/run/wpa_supplicant GROUP=netdev\nupdate_config=1\n' > "$WIFI_CONF"
+  fi
+  if ! wifi_cli_ok; then
+    systemctl restart "wpa_supplicant@$WIFI_IF.service" 2>/dev/null
+    i=0; until wifi_cli_ok || [ $i -ge 10 ]; do sleep 1; i=$((i + 1)); done
+    wifi_cli_ok || { echo "the Wi-Fi service is not running (journalctl -u wpa_supplicant@$WIFI_IF)"; return 1; }
+  fi
+}
+
+# Scan, waiting up to 8 s; returns early once results are in.
+wifi_scan() {
+  $WIFI_CLI scan >/dev/null 2>&1
+  i=0
+  while [ $i -lt 8 ]; do
+    sleep 1; i=$((i + 1))
+    [ $i -ge 3 ] && [ "$($WIFI_CLI scan_results 2>/dev/null | wc -l)" -gt 1 ] && break
+  done
+}
+
+# One line per network name, strongest first:
+#   percent <TAB> security <TAB> state <TAB> name
+# security: psk | sae | open | eap | wep;  state: connected | saved | new
+wifi_list() {
+  cur=$(wifi_current)
+  saved=$($WIFI_CLI list_networks 2>/dev/null | awk -F'\t' 'NR>1 {print $2}')
+  # through the environment: awk -v would interpret backslashes in the values
+  $WIFI_CLI scan_results 2>/dev/null | CUR="$cur" SAVED="$saved" awk -F'\t' '
+    BEGIN { cur = ENVIRON["CUR"]; n = split(ENVIRON["SAVED"], s, "\n"); for (i = 1; i <= n; i++) known[s[i]] = 1 }
+    NR > 1 && $5 ~ /^[ !#-\[\]-~]+$/ {
+      if (!($5 in best) || $3 > best[$5]) best[$5] = $3
+      f = $4
+      sec = (f ~ /EAP/) ? "eap" : (f ~ /SAE/ && f !~ /PSK/) ? "sae" : (f ~ /PSK|SAE/) ? "psk" : (f ~ /WEP/) ? "wep" : "open"
+      # a name broadcast by several access points: keep the most usable kind
+      if (!($5 in kind) || sec == "psk" || (sec == "sae" && kind[$5] != "psk")) kind[$5] = sec
+    }
+    END {
+      for (n in best) {
+        p = 2 * (best[n] + 100); if (p > 100) p = 100; if (p < 0) p = 0
+        st = (n == cur) ? "connected" : (n in known) ? "saved" : "new"
+        printf "%d\t%s\t%s\t%s\n", p, kind[n], st, n
+      }
+    }' | sort -t "$(printf '\t')" -k1,1nr
+}
+
+# Name of the network we are associated with, if any.
+wifi_current() {
+  $WIFI_CLI status 2>/dev/null | awk -F= '$1=="wpa_state" {s=$2} $1=="ssid" {n=$2} END {if (s=="COMPLETED") print n}'
+}
+
+wifi_id() { $WIFI_CLI list_networks 2>/dev/null | awk -F'\t' -v s="$1" 'NR>1 && $2==s {print $1; exit}'; }
+
+# wifi_add NAME SECURITY: add a network block and print its id. For psk/sae the
+# passphrase is read from stdin (one line). Fails if it cannot be used.
+wifi_add() {
+  hex=$(printf '%s' "$1" | od -An -tx1 | tr -d ' \n')
+  id=$($WIFI_CLI add_network | tail -1)
+  case "$2" in
+    open) printf 'set_network %s ssid %s\nset_network %s key_mgmt NONE\nquit\n' "$id" "$hex" "$id" | $WIFI_CLI >/dev/null ;;
+    psk)
+      # stored as the derived 256-bit key, not the passphrase, which also means any
+      # character works (no quoting through wpa_cli)
+      key=$(wpa_passphrase "$1" | sed -n 's/^[[:space:]]*psk=//p')
+      [ ${#key} = 64 ] || { $WIFI_CLI remove_network "$id" >/dev/null; return 1; }
+      printf 'set_network %s ssid %s\nset_network %s psk %s\nquit\n' "$id" "$hex" "$id" "$key" | $WIFI_CLI >/dev/null
+      unset key ;;
+    sae)   # WPA3-only access point: SAE needs the passphrase itself, and protected
+           # management frames. Callers keep " and \ out of it (wpa_cli quoting).
+      IFS= read -r psk
+      printf 'set_network %s ssid %s\nset_network %s sae_password "%s"\nset_network %s key_mgmt SAE\nset_network %s ieee80211w 2\nquit\n' \
+        "$id" "$hex" "$id" "$psk" "$id" "$id" | $WIFI_CLI >/dev/null
+      unset psk ;;
+  esac
+  echo "$id"
+}
+
+# wifi_join NAME ID: connect and wait up to 25 s. Returns 0 connected (prints the
+# address), 2 wrong passphrase, 3 associated but no address, 1 anything else.
+wifi_join() {
+  $WIFI_CLI select_network "$2" >/dev/null
+  $WIFI_CLI reconnect >/dev/null
+  i=0
+  while [ $i -lt 25 ]; do
+    sleep 1; i=$((i + 1))
+    if [ "$(wifi_current)" = "$1" ]; then
+      ip=$(ip -4 -o addr show "$WIFI_IF" | awk '{sub("/.*", "", $4); print $4; exit}')
+      [ -n "$ip" ] && { $WIFI_CLI enable_network all >/dev/null; echo "$ip"; return 0; }
+    fi
+    $WIFI_CLI list_networks | awk -F'\t' -v id="$2" '$1==id && $4 ~ /TEMP-DISABLED/ {f=1} END {exit !f}' && break
+  done
+  $WIFI_CLI enable_network all >/dev/null
+  if $WIFI_CLI list_networks | awk -F'\t' -v id="$2" '$1==id && $4 ~ /TEMP-DISABLED/ {f=1} END {exit !f}'; then return 2; fi
+  [ "$(wifi_current)" = "$1" ] && return 3
+  return 1
+}
+
+wifi_save() { $WIFI_CLI save_config >/dev/null 2>&1; }
+wifi_forget() { id=$(wifi_id "$1"); [ -n "$id" ] && $WIFI_CLI remove_network "$id" >/dev/null && wifi_save; }
+wifi_disconnect() { $WIFI_CLI disconnect >/dev/null; }
+
+# what to tell a person about a failed wifi_join
+wifi_why() {
+  case "$1" in
+    2) echo "wrong passphrase" ;;
+    3) echo "joined, but the network gave no address (DHCP)" ;;
+    *) echo "could not connect (out of range, or the network refused)" ;;
+  esac
+}

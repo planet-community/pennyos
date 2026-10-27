@@ -1,0 +1,452 @@
+// SPDX-License-Identifier: GPL-2.0
+/*
+ * Planet Cosmo Communicator main panel, Solomon SSD2092 TDDI variant
+ * (1080x2160, 4-lane DSI, sync-pulse video mode).
+ *
+ * Reset timing, the init table and the suspend table are those of the vendor LCM
+ * driver "aeon_ssd2092_fhd_dsi_solomon" in Planet's 4.4 kernel. Unlike the
+ * panel-simple entry for the same panel this does not depend on the bootloader's
+ * setup, so the panel can be powered down and brought back.
+ *
+ * The display bias rails (MT6370 DSV) are left alone for now; they stay on.
+ */
+
+#include <linux/backlight.h>
+#include <linux/delay.h>
+#include <linux/gpio/consumer.h>
+#include <linux/module.h>
+#include <linux/notifier.h>
+#include <linux/of.h>
+
+#include <video/mipi_display.h>
+
+#include <drm/drm_mipi_dsi.h>
+#include <drm/drm_modes.h>
+#include <drm/drm_panel.h>
+
+/*
+ * The SSD2092 is a TDDI: the panel reset also resets its touch half, which then
+ * has to be booted again. The touch driver (ssd20xx) listens here; the event is 1
+ * once the panel has been re-initialised and 0 before it is put into reset.
+ */
+BLOCKING_NOTIFIER_HEAD(cosmo_ssd2092_panel_notifier);
+EXPORT_SYMBOL_GPL(cosmo_ssd2092_panel_notifier);
+
+struct ssd2092 {
+	struct drm_panel panel;
+	struct mipi_dsi_device *dsi;
+	struct gpio_desc *reset;
+	enum drm_panel_orientation orientation;
+	bool prepared;
+};
+
+static inline struct ssd2092 *to_ssd2092(struct drm_panel *panel)
+{
+	return container_of(panel, struct ssd2092, panel);
+}
+
+struct ssd2092_cmd {
+	u8 cmd;
+	u8 len;
+	const u8 *data;
+};
+
+#define CMD(c, ...) { (c), sizeof((const u8[]){ __VA_ARGS__ }), (const u8[]){ __VA_ARGS__ } }
+
+static const struct ssd2092_cmd ssd2092_init[] = {
+	CMD(0xb5, 0x00, 0x00),
+	CMD(0xb3, 0x03, 0x96),
+	CMD(0xb4, 0x21, 0xff),
+	CMD(0xe1, 0x00, 0x00),
+	CMD(0xe1, 0x03, 0x00, 0x10),
+	CMD(0xb0, 0x04, 0x01),
+	CMD(0xb0, 0x07, 0x14),
+	CMD(0xc6, 0x04, 0x2d),
+	CMD(0xb9, 0x0e, 0x44),
+	CMD(0xc1, 0x0c, 0x26),
+	CMD(0xc1, 0x08, 0x99),
+	CMD(0xb9, 0x23, 0x00),
+	CMD(0xc2, 0x04, 0x0f),
+	CMD(0xb9, 0x11, 0x22),
+	CMD(0xb9, 0x12, 0x22),
+	CMD(0xb9, 0x13, 0x22),
+	CMD(0xb3, 0x19, 0x0b),
+	CMD(0xb0, 0x3d, 0xc8),
+	CMD(0xb3, 0x0f, 0x20),
+	CMD(0x36, 0x02),
+	CMD(0xc7, 0x01, 0x09),
+	CMD(0xb3, 0x15, 0x80),
+	CMD(0xb3, 0x1e, 0x02),
+	CMD(0xb3, 0x14, 0xc0),
+	CMD(0xb3, 0x16, 0x50),
+	CMD(0xb3, 0x1c, 0xe4),
+	CMD(0xb3, 0x28, 0x09),
+	CMD(0xb3, 0x24, 0x19),
+	CMD(0xb0, 0x12, 0x00),
+	CMD(0xb0, 0x13, 0x14),
+	CMD(0xb0, 0x1a, 0x00),
+	CMD(0xb0, 0x1b, 0x14),
+	CMD(0xc1, 0x0d, 0x87),
+	CMD(0xc1, 0x0e, 0x87),
+	CMD(0xc3, 0x00, 0x10, 0x2e, 0x3e, 0x48, 0x5e, 0x6b, 0x7a, 0x83, 0x97, 0xa3,
+	    0xa8, 0xa5, 0xac, 0xad, 0xb5, 0xc1, 0xc4, 0x4e, 0x4f, 0x59, 0x5a),
+	CMD(0xc3, 0x15, 0x10, 0x2e, 0x3e, 0x48, 0x5e, 0x6b, 0x7a, 0x83, 0x97, 0xa3,
+	    0xa8, 0xa5, 0xac, 0xad, 0xb5, 0xc1, 0xc4, 0x4e, 0x4f, 0x59, 0x5a),
+	CMD(0xbb, 0x01, 0x8a),
+	CMD(0xbb, 0x02, 0x23),
+	CMD(0xbb, 0x03, 0xbc),
+	CMD(0xbb, 0x04, 0xc0),
+	CMD(0xbb, 0x05, 0x19),
+	CMD(0xbb, 0x06, 0x37),
+	CMD(0xbb, 0x07, 0xee),
+	CMD(0xbb, 0x08, 0xdd),
+	CMD(0xbb, 0x09, 0xcc),
+	CMD(0xbb, 0x0a, 0x36),
+	CMD(0xbb, 0x0b, 0x70),
+	CMD(0xbb, 0x0c, 0x00),
+	CMD(0xbb, 0x0d, 0x8a),
+	CMD(0xbb, 0x0e, 0x23),
+	CMD(0xbb, 0x0f, 0xbc),
+	CMD(0xbb, 0x10, 0xc0),
+	CMD(0xbb, 0x11, 0x18),
+	CMD(0xbb, 0x12, 0xa7),
+	CMD(0xbb, 0x13, 0xee),
+	CMD(0xbb, 0x14, 0xdd),
+	CMD(0xbb, 0x15, 0xcc),
+	CMD(0xbb, 0x16, 0x36),
+	CMD(0xbb, 0x17, 0x70),
+	CMD(0xbb, 0x18, 0x00),
+	CMD(0xbb, 0x31, 0x01),
+	CMD(0xbd, 0x00, 0xf0),
+	CMD(0xbd, 0x01, 0xf0),
+	CMD(0xbd, 0x02, 0xf0),
+	CMD(0xbd, 0x03, 0xf0),
+	CMD(0xbd, 0x1a, 0x02),
+	CMD(0xbd, 0x1b, 0x24),
+	CMD(0xbd, 0x1d, 0x01),
+	CMD(0xbd, 0x1e, 0x01),
+	CMD(0xbd, 0x21, 0x00),
+	CMD(0xbd, 0x1f, 0x79),
+	CMD(0xbd, 0x20, 0x14),
+	CMD(0xbd, 0x22, 0x89),
+	CMD(0xbd, 0x23, 0x13),
+	CMD(0xbd, 0x24, 0x35),
+	CMD(0xbd, 0x26, 0x01),
+	CMD(0xbd, 0x27, 0x01),
+	CMD(0xbd, 0x2a, 0x00),
+	CMD(0xbd, 0x28, 0x79),
+	CMD(0xbd, 0x29, 0x14),
+	CMD(0xbd, 0x2b, 0x89),
+	CMD(0xbd, 0x2c, 0x33),
+	CMD(0xbd, 0x2d, 0x33),
+	CMD(0xbd, 0x2e, 0x11),
+	CMD(0xbd, 0x2f, 0x11),
+	CMD(0xbd, 0x31, 0x22),
+	CMD(0xbd, 0x32, 0x01),
+	CMD(0xbd, 0x33, 0x04),
+	CMD(0xbd, 0x34, 0x11),
+	CMD(0xbd, 0x35, 0x11),
+	CMD(0xbd, 0x37, 0x22),
+	CMD(0xbd, 0x38, 0x01),
+	CMD(0xbd, 0x39, 0x04),
+	CMD(0xbd, 0x3a, 0x1e),
+	CMD(0xbd, 0x3b, 0x1e),
+	CMD(0xbd, 0x3c, 0x1e),
+	CMD(0xbd, 0x3d, 0x1e),
+	CMD(0xbd, 0x40, 0xaa),
+	CMD(0xbd, 0x42, 0x1e),
+	CMD(0xbd, 0x43, 0x1e),
+	CMD(0xbd, 0x44, 0x1e),
+	CMD(0xbd, 0x45, 0x1e),
+	CMD(0xbd, 0x48, 0xaa),
+	CMD(0xba, 0x02, 0x05),
+	CMD(0xba, 0x03, 0x01),
+	CMD(0xbc, 0x1e, 0x71),
+	CMD(0xbc, 0x24, 0x83),
+	CMD(0xb8, 0x03, 0xa9),
+	CMD(0xba, 0x15, 0x41),
+	CMD(0xbb, 0x19, 0x8a),
+	CMD(0xbb, 0x1a, 0x32),
+	CMD(0xbb, 0x1b, 0xbc),
+	CMD(0xbb, 0x1c, 0xc2),
+	CMD(0xbb, 0x1d, 0x39),
+	CMD(0xbb, 0x1e, 0x37),
+	CMD(0xbb, 0x1f, 0xee),
+	CMD(0xbb, 0x20, 0xdd),
+	CMD(0xbb, 0x21, 0xcc),
+	CMD(0xbb, 0x22, 0x36),
+	CMD(0xbb, 0x23, 0x70),
+	CMD(0xbb, 0x24, 0x00),
+	CMD(0xbb, 0x25, 0x8a),
+	CMD(0xbb, 0x26, 0x32),
+	CMD(0xbb, 0x27, 0xbc),
+	CMD(0xbb, 0x28, 0xc2),
+	CMD(0xbb, 0x29, 0x38),
+	CMD(0xbb, 0x2a, 0xa7),
+	CMD(0xbb, 0x2b, 0xee),
+	CMD(0xbb, 0x2c, 0xdd),
+	CMD(0xbb, 0x2d, 0xcc),
+	CMD(0xbb, 0x2e, 0x36),
+	CMD(0xbb, 0x2f, 0x70),
+	CMD(0xbb, 0x30, 0x00),
+	CMD(0xb8, 0x15, 0xa2),
+	CMD(0xb0, 0x39, 0x00),
+	CMD(0xc6, 0x00, 0x03, 0x40),
+	CMD(0xb3, 0x18, 0x00),
+	CMD(0xba, 0x17, 0x28),
+	CMD(0xba, 0x23, 0x15),
+	CMD(0xb0, 0x06, 0x2c),
+	CMD(0xba, 0x17, 0x28),
+	CMD(0xba, 0x23, 0x15),
+	CMD(0xba, 0x16, 0x00),
+	CMD(0xba, 0x28, 0x02, 0x02),
+	CMD(0xba, 0x0f, 0x8c),
+	CMD(0xba, 0x10, 0x0c),
+	CMD(0xba, 0x11, 0x23),
+	CMD(0xba, 0x12, 0x9d, 0x9d, 0x9d),
+	CMD(0xba, 0x25, 0x22),
+	CMD(0xba, 0x0d, 0x40, 0x02),
+	CMD(0xba, 0x2f, 0x8c),
+	CMD(0xc2, 0x04, 0x00),
+	CMD(0xc2, 0x05, 0xc0),
+	CMD(0xb9, 0x11, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00),
+	CMD(0xba, 0x15, 0x33),
+	CMD(0xb9, 0x00, 0x5f, 0x5f, 0x61, 0x0a),
+	CMD(0xbd, 0x08, 0x07),
+	CMD(0xbd, 0x09, 0x07),
+	CMD(0xbc, 0x03, 0x00),
+	CMD(0xbc, 0x04, 0x00),
+	CMD(0xbc, 0x05, 0x00),
+	CMD(0xbc, 0x07, 0x10),
+	CMD(0xbc, 0x08, 0x10),
+	CMD(0xbc, 0x09, 0x10),
+	CMD(0xb9, 0x11, 0x00),
+	CMD(0xb9, 0x12, 0x00),
+	CMD(0xb9, 0x13, 0x00),
+	CMD(0xb9, 0x1d, 0x00),
+	CMD(0xb9, 0x1e, 0x00),
+	CMD(0xb9, 0x1f, 0x00),
+	CMD(0xc2, 0x00, 0x07),
+	CMD(0xc1, 0x0b, 0x1f),
+	CMD(0xb1, 0x05, 0x2f),
+	CMD(0x35, 0x00),
+	CMD(0xb0, 0x01, 0x08, 0x70),
+	CMD(0xb9, 0x25, 0xa0),
+	CMD(0xba, 0x2f, 0xcc),
+	CMD(0xc1, 0x02, 0xb0),
+	CMD(0xb3, 0x1c, 0xc4),
+	CMD(0xb3, 0x1d, 0x80),
+	CMD(0xbd, 0x11, 0x02, 0x22),
+	CMD(0x36, 0x09),
+};
+
+static int ssd2092_write(struct ssd2092 *ctx, u8 cmd, const u8 *data, size_t len)
+{
+	int ret = mipi_dsi_dcs_write(ctx->dsi, cmd, data, len);
+
+	if (ret < 0) {
+		dev_err(&ctx->dsi->dev, "command 0x%02x failed: %d\n", cmd, ret);
+		return ret;
+	}
+	return 0;
+}
+
+static void ssd2092_reset(struct ssd2092 *ctx)
+{
+	/* logical values: 1 = held in reset */
+	gpiod_set_value_cansleep(ctx->reset, 1);
+	msleep(20);
+	gpiod_set_value_cansleep(ctx->reset, 0);
+	msleep(10);
+	gpiod_set_value_cansleep(ctx->reset, 1);
+	msleep(10);
+	gpiod_set_value_cansleep(ctx->reset, 0);
+	msleep(20);
+}
+
+static int ssd2092_prepare(struct drm_panel *panel)
+{
+	struct ssd2092 *ctx = to_ssd2092(panel);
+	static const u8 zero = 0x00;
+	unsigned int i;
+	int ret;
+
+	if (ctx->prepared)
+		return 0;
+
+	ssd2092_reset(ctx);
+
+	ret = ssd2092_write(ctx, MIPI_DCS_SET_DISPLAY_OFF, NULL, 0);
+	if (ret)
+		goto fail;
+	ret = ssd2092_write(ctx, MIPI_DCS_ENTER_SLEEP_MODE, NULL, 0);
+	if (ret)
+		goto fail;
+
+	for (i = 0; i < ARRAY_SIZE(ssd2092_init); i++) {
+		ret = ssd2092_write(ctx, ssd2092_init[i].cmd, ssd2092_init[i].data,
+				    ssd2092_init[i].len);
+		if (ret)
+			goto fail;
+	}
+
+	/* the vendor table sends these two with one zero parameter */
+	ret = ssd2092_write(ctx, MIPI_DCS_EXIT_SLEEP_MODE, &zero, 1);
+	if (ret)
+		goto fail;
+	msleep(120);
+	ret = ssd2092_write(ctx, MIPI_DCS_SET_DISPLAY_ON, &zero, 1);
+	if (ret)
+		goto fail;
+	msleep(50);
+
+	ctx->prepared = true;
+	blocking_notifier_call_chain(&cosmo_ssd2092_panel_notifier, 1, NULL);
+	return 0;
+
+fail:
+	gpiod_set_value_cansleep(ctx->reset, 1);
+	return ret;
+}
+
+static int ssd2092_unprepare(struct drm_panel *panel)
+{
+	struct ssd2092 *ctx = to_ssd2092(panel);
+
+	if (!ctx->prepared)
+		return 0;
+
+	blocking_notifier_call_chain(&cosmo_ssd2092_panel_notifier, 0, NULL);
+
+	/* best effort: the panel goes into reset either way */
+	ssd2092_write(ctx, MIPI_DCS_SET_DISPLAY_OFF, NULL, 0);
+	msleep(50);
+	ssd2092_write(ctx, MIPI_DCS_ENTER_SLEEP_MODE, NULL, 0);
+	msleep(130);
+	gpiod_set_value_cansleep(ctx->reset, 1);
+
+	ctx->prepared = false;
+	return 0;
+}
+
+static const struct drm_display_mode ssd2092_mode = {
+	.clock = 154584,
+	.hdisplay = 1080,
+	.hsync_start = 1080 + 26,
+	.hsync_end = 1080 + 26 + 4,
+	.htotal = 1080 + 26 + 4 + 20,
+	.vdisplay = 2160,
+	.vsync_start = 2160 + 76,
+	.vsync_end = 2160 + 76 + 1,
+	.vtotal = 2160 + 76 + 1 + 43,
+	.width_mm = 68,
+	.height_mm = 136,
+	.flags = DRM_MODE_FLAG_NHSYNC | DRM_MODE_FLAG_NVSYNC,
+	.type = DRM_MODE_TYPE_DRIVER | DRM_MODE_TYPE_PREFERRED,
+};
+
+static int ssd2092_get_modes(struct drm_panel *panel, struct drm_connector *connector)
+{
+	struct ssd2092 *ctx = to_ssd2092(panel);
+	struct drm_display_mode *mode;
+
+	mode = drm_mode_duplicate(connector->dev, &ssd2092_mode);
+	if (!mode)
+		return -ENOMEM;
+
+	drm_mode_set_name(mode);
+	drm_mode_probed_add(connector, mode);
+
+	connector->display_info.width_mm = mode->width_mm;
+	connector->display_info.height_mm = mode->height_mm;
+	connector->display_info.bpc = 8;
+	drm_connector_set_panel_orientation(connector, ctx->orientation);
+
+	return 1;
+}
+
+static enum drm_panel_orientation ssd2092_get_orientation(struct drm_panel *panel)
+{
+	return to_ssd2092(panel)->orientation;
+}
+
+static const struct drm_panel_funcs ssd2092_funcs = {
+	.prepare = ssd2092_prepare,
+	.unprepare = ssd2092_unprepare,
+	.get_modes = ssd2092_get_modes,
+	.get_orientation = ssd2092_get_orientation,
+};
+
+static int ssd2092_probe(struct mipi_dsi_device *dsi)
+{
+	struct device *dev = &dsi->dev;
+	struct ssd2092 *ctx;
+	int ret;
+
+	ctx = devm_kzalloc(dev, sizeof(*ctx), GFP_KERNEL);
+	if (!ctx)
+		return -ENOMEM;
+
+	ctx->dsi = dsi;
+	mipi_dsi_set_drvdata(dsi, ctx);
+
+	/* GPIOD_ASIS: the bootloader leaves the panel running, do not blank it here */
+	ctx->reset = devm_gpiod_get(dev, "reset", GPIOD_ASIS);
+	if (IS_ERR(ctx->reset))
+		return dev_err_probe(dev, PTR_ERR(ctx->reset), "no reset GPIO\n");
+	gpiod_direction_output(ctx->reset, 0);
+
+	ret = of_drm_get_panel_orientation(dev->of_node, &ctx->orientation);
+	if (ret)
+		return dev_err_probe(dev, ret, "bad rotation property\n");
+
+	dsi->lanes = 4;
+	dsi->format = MIPI_DSI_FMT_RGB888;
+	dsi->mode_flags = MIPI_DSI_MODE_VIDEO | MIPI_DSI_MODE_VIDEO_SYNC_PULSE |
+			  MIPI_DSI_CLOCK_NON_CONTINUOUS | MIPI_DSI_MODE_LPM;
+
+	drm_panel_init(&ctx->panel, dev, &ssd2092_funcs, DRM_MODE_CONNECTOR_DSI);
+	/* commands need the DSI host powered and in LP-11 before prepare() */
+	ctx->panel.prepare_prev_first = true;
+
+	ret = drm_panel_of_backlight(&ctx->panel);
+	if (ret)
+		return dev_err_probe(dev, ret, "no backlight\n");
+
+	drm_panel_add(&ctx->panel);
+
+	ret = mipi_dsi_attach(dsi);
+	if (ret) {
+		drm_panel_remove(&ctx->panel);
+		return dev_err_probe(dev, ret, "DSI attach failed\n");
+	}
+
+	return 0;
+}
+
+static void ssd2092_remove(struct mipi_dsi_device *dsi)
+{
+	struct ssd2092 *ctx = mipi_dsi_get_drvdata(dsi);
+
+	mipi_dsi_detach(dsi);
+	drm_panel_remove(&ctx->panel);
+}
+
+static const struct of_device_id ssd2092_of_match[] = {
+	{ .compatible = "planet,cosmocom-ssd2092" },
+	{ }
+};
+MODULE_DEVICE_TABLE(of, ssd2092_of_match);
+
+static struct mipi_dsi_driver ssd2092_driver = {
+	.probe = ssd2092_probe,
+	.remove = ssd2092_remove,
+	.driver = {
+		.name = "panel-planet-ssd2092",
+		.of_match_table = ssd2092_of_match,
+	},
+};
+module_mipi_dsi_driver(ssd2092_driver);
+
+MODULE_DESCRIPTION("Planet Cosmo Communicator SSD2092 DSI panel");
+MODULE_LICENSE("GPL");

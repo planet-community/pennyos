@@ -1,0 +1,161 @@
+#!/bin/sh
+# Wi-Fi menu for the bar: tapping the Wi-Fi icon drops this down from the top right.
+# Connected: network, signal, address, then disconnect / other networks / forget.
+# Not connected: the networks in range, strongest first, marked saved or open.
+# Asks for a passphrase for a new network and says whether joining worked and, if
+# not, why. Logic shared with penny-wifi-connect in /usr/local/lib/pennyos/wifi.sh
+# (limits are listed there).
+. /usr/local/lib/pennyos/wifi.sh
+
+say() { notify-send -t "${2:-4000}" -h string:x-canonical-private-synchronous:penny-wifi "Wi-Fi" "$1" 2>/dev/null; }
+# pick PROMPT LINES...: a fuzzel list sized to its contents
+pick() {
+  p=$1; shift
+  n=$#; [ $n -gt 12 ] && n=12
+  printf '%s\n' "$@" | fuzzel --dmenu $DROP --width 36 --lines $n --prompt "$p"
+}
+# a drop-down under the right end of the bar, not a centred launcher
+DROP="--anchor top-right --x-margin 8 --y-margin 4"
+bars() {
+  if [ "$1" -ge 75 ]; then echo "▂▄▆█"; elif [ "$1" -ge 50 ]; then echo "▂▄▆ "; elif [ "$1" -ge 25 ]; then echo "▂▄  "; else echo "▂   "; fi
+}
+passphrase() { fuzzel --dmenu $DROP --password --width 36 --lines 0 --prompt "$1" < /dev/null; }
+
+err=$(wifi_ready) || { say "Wi-Fi is not available: $err" 10000; exit 1; }
+# start a fresh scan now, so the list is current by the time it is opened
+$WIFI_CLI scan >/dev/null 2>&1
+
+# connect a network that is already saved, or add it first
+connect() {   # NAME SECURITY STATE
+  name=$1 sec=$2
+  case "$sec" in
+    eap) say "\"$name\" needs a user name and password (enterprise Wi-Fi): not supported yet" 8000; return ;;
+    wep) say "\"$name\" uses WEP, which is insecure and not supported" 8000; return ;;
+  esac
+  id=$(wifi_id "$name")
+  if [ -n "$id" ]; then
+    say "Connecting to $name..." 30000
+    ip=$(wifi_join "$name" "$id"); rc=$?
+    [ $rc = 0 ] && { say "Connected to $name ($ip)"; return; }
+    [ $rc = 2 ] || { say "$name: $(wifi_why $rc)" 8000; return; }
+    # saved, but the passphrase no longer works: ask for the new one
+    wifi_forget "$name"
+    say "$name: wrong passphrase. Enter it again." 6000
+  fi
+  if [ "$sec" = open ]; then
+    a=$(pick "\"$name\" has no password. Anyone nearby can see your traffic: " "Cancel" "Join anyway") || return
+    [ "$a" = "Join anyway" ] || return
+  fi
+  tries=0
+  while [ $tries -lt 3 ]; do
+    tries=$((tries + 1))
+    if [ "$sec" = open ]; then
+      id=$(wifi_add "$name" open)
+    else
+      psk=$(passphrase "Passphrase for $name: ") || return
+      n=${#psk}
+      if [ "$n" -lt 8 ] || [ "$n" -gt 63 ]; then say "A Wi-Fi passphrase has 8 to 63 characters" 6000; continue; fi
+      if [ "$sec" = sae ]; then case "$psk" in *\"*|*\\*)
+        say "This WPA3 network's passphrase contains \" or \\, which is not supported yet" 10000; return ;;
+      esac; fi
+      id=$(printf '%s\n' "$psk" | wifi_add "$name" "$sec") || { unset psk; say "$name: could not use that passphrase" 6000; return; }
+      unset psk
+    fi
+    # a hidden network is only found when it is asked for by name
+    [ "$HIDDEN" = 1 ] && $WIFI_CLI set_network "$id" scan_ssid 1 >/dev/null
+    say "Connecting to $name..." 30000
+    ip=$(wifi_join "$name" "$id"); rc=$?
+    [ $rc = 0 ] && { wifi_save; say "Connected to $name ($ip)"; return; }
+    # never keep a network that did not work
+    $WIFI_CLI remove_network "$id" >/dev/null
+    say "$name: $(wifi_why $rc)" 8000
+    [ $rc = 2 ] && [ "$sec" != open ] || return
+  done
+}
+
+acts=$(mktemp); trap 'rm -f "$acts"' EXIT
+TAB=$(printf '\t')
+# choose PROMPT, with the menu lines in "$@" and their actions in $acts; prints the
+# action of the chosen line (by position: fuzzel also returns typed text)
+choose() {
+  p=$1; shift
+  choice=$(pick "$p" "$@") || return 1
+  k=0
+  for l in "$@"; do k=$((k + 1)); [ "$l" = "$choice" ] && { sed -n "${k}p" "$acts"; return 0; }; done
+  return 1
+}
+
+cur=$(wifi_current)
+if [ -n "$cur" ]; then
+  : > "$acts"
+  info=$($WIFI_CLI signal_poll 2>/dev/null | awk -F= '$1=="RSSI" {r=$2} $1=="FREQUENCY" {f=$2}
+    END { p = 2 * (r + 100); if (p > 100) p = 100; if (p < 0) p = 0
+          printf "Signal %d%%   %s GHz", p, (f >= 5000 ? "5" : "2.4") }')
+  ip=$(ip -4 -o addr show "$WIFI_IF" | awk '{sub("/.*", "", $4); print $4; exit}')
+  set -- "Connected to $cur" "$info" "Address ${ip:-(none yet)}" \
+    "Disconnect" "Other networks..." "Forget this network"
+  printf 'info\ninfo\ninfo\ndisconnect\nlist\nforget\n' > "$acts"
+  act=$(choose "Wi-Fi  " "$@") || exit 0
+  case "$act" in
+    disconnect) wifi_disconnect; say "Disconnected from $cur"; exit 0 ;;
+    forget) wifi_forget "$cur" && say "Forgot $cur"; exit 0 ;;
+    list) ;;
+    *) exit 0 ;;
+  esac
+fi
+
+# the list of networks: wait for scan results only if there are none yet
+[ "$($WIFI_CLI scan_results 2>/dev/null | wc -l)" -gt 1 ] || { say "Searching for networks..." 10000; wifi_scan; }
+while :; do
+  : > "$acts"
+  list=$(wifi_list)
+  cur=$(wifi_current)
+  saved=$($WIFI_CLI list_networks 2>/dev/null | awk -F'\t' 'NR>1 && $2!="" {print $2}')
+  # menu lines and, in the same order, what each one does
+  set --
+  while IFS="$TAB" read -r pct sec st name; do
+    [ -n "$name" ] || continue
+    case "$st" in connected) note="  - connected" ;; saved) note="  - saved" ;; *) note="" ;; esac
+    case "$sec" in open) note="$note  (no password)" ;; eap) note="$note  (enterprise)" ;; esac
+    set -- "$@" "$(bars "$pct")   $name$note"
+    printf 'net\t%s\t%s\t%s\n' "$sec" "$st" "$name" >> "$acts"
+  done <<EOF
+$list
+EOF
+  [ -n "$list" ] || { set -- "(no networks found)"; echo "none" >> "$acts"; }
+  set -- "$@" "Search again" "Other network (hidden name)..."; printf 'rescan\nhidden\n' >> "$acts"
+  [ -n "$cur" ] && { set -- "$@" "Disconnect from $cur"; echo disconnect >> "$acts"; }
+  [ -n "$saved" ] && { set -- "$@" "Forget a saved network..."; echo forget >> "$acts"; }
+
+  act=$(choose "Wi-Fi (${cur:-not connected}): " "$@") || exit 0
+  case "$act" in
+    none) ;;
+    rescan) say "Searching for networks..." 10000; wifi_scan; continue ;;
+    disconnect) wifi_disconnect; say "Disconnected from $cur" ;;
+    forget)
+      # shellcheck disable=SC2086
+      f=$(set -f; IFS='
+'; pick "Forget which network? " $saved) || exit 0
+      printf '%s\n' "$saved" | grep -Fxq -- "$f" || exit 0
+      wifi_forget "$f" && say "Forgot $f" ;;
+    hidden)
+      name=$(fuzzel --dmenu $DROP --width 36 --lines 0 --prompt "Network name: " < /dev/null) || exit 0
+      printf '%s\n' "$name" | awk '/^[ !#-\[\]-~]+$/ {f=1} END {exit !f}' || { say "Only plain names without \" or \\ are supported here"; exit 0; }
+      a=$(pick "Does \"$name\" have a password? " "Yes" "No") || exit 0
+      [ "$a" = Yes ] && s=psk || s=open
+      id=$(wifi_id "$name"); [ -n "$id" ] && $WIFI_CLI remove_network "$id" >/dev/null
+      HIDDEN=1; connect "$name" "$s" new ;;
+    net*)
+      sec=$(printf '%s' "$act" | cut -f2) st=$(printf '%s' "$act" | cut -f3) name=$(printf '%s' "$act" | cut -f4-)
+      if [ "$st" = connected ]; then
+        a=$(pick "$name: " "Stay connected" "Disconnect" "Forget this network") || exit 0
+        case "$a" in
+          Disconnect) wifi_disconnect; say "Disconnected from $name" ;;
+          Forget*) wifi_forget "$name" && say "Forgot $name" ;;
+        esac
+      else
+        connect "$name" "$sec" "$st"
+      fi ;;
+  esac
+  exit 0
+done

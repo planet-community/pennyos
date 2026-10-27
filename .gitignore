@@ -1,0 +1,47 @@
+# collected/ holds per-phone data and is never committed: device dumps (identifiers),
+# NVRAM/modem backups (IMEI, per-device secrets), partition backups, live captures
+# (the kernel cmdline carries the serial number), proprietary radio firmware.
+# Curate findings into research/ docs instead.
+collected/*
+!collected/device-dumps/
+collected/device-dumps/*
+!collected/device-dumps/.gitkeep
+
+# Build outputs in boot/ (kernel, DTB, boot images)
+boot/*
+!boot/README.md
+
+# External kernel clone — large, built from a Docker volume, not tracked here.
+# Both forms: dir contents and the gitlink entry (dir contains its own .git).
+kernel/linux-mt6771
+kernel/linux-mt6771/
+
+# Kernel / build artifacts
+*.o
+*.ko
+*.dtb
+*.dtbo
+*.img
+*.gz
+*.tar
+*.zst
+build/
+out/
+*.log
+
+# Extracted firmware / large binaries
+*.bin
+*.mbn
+*.elf
+
+# Editor / OS cruft
+.DS_Store
+*.swp
+.idea/
+.vscode/
+__pycache__/
+# partial copies left by an interrupted Finder/macOS copy
+.!*
+
+# Static arm64 busybox for the initramfs, fetched by tools/mkboot.sh
+tools/initramfs/busybox-arm64

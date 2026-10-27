@@ -1,0 +1,128 @@
+// SPDX-License-Identifier: (GPL-2.0-only OR MIT)
+/*
+ * MT6771 built-in connectivity subsystem ("consys": Wi-Fi/BT/GPS/FM MCU inside the
+ * SoC, MT6631 RF) and the BTIF block the AP uses to talk to it. Consumed by the
+ * out-of-tree port of the vendor WMT/BTIF drivers (see research/wifi-scoping.md),
+ * so compatibles, clock-names and supply names are the vendor driver's.
+ *
+ * Vendor clock indices are mainline's + 1 for this SoC family: vendor <&infracfg 27>
+ * and <&infracfg 43> are CLK_INFRA_BTIF (26) and CLK_INFRA_AP_DMA (42) here.
+ * The vendor "conn" clock is really the CONN power domain.
+ */
+#include <dt-bindings/power/mt8183-power.h>
+
+/ {
+	reserved-memory {
+		/* RAM shared with the consys MCU; the driver ioremaps it, so no-map */
+		consys-reserve-memory {
+			compatible = "mediatek,consys-reserve-memory";
+			no-map;
+			size = <0 0x200000>;
+			alignment = <0 0x200000>;
+			alloc-ranges = <0 0x40000000 0 0x80000000>;
+		};
+	};
+
+	soc {
+		btif@1100c000 {
+			compatible = "mediatek,btif";
+			reg = <0 0x1100c000 0 0x1000>,	/* BTIF */
+			      <0 0x11000a80 0 0x80>,	/* AP DMA, BTIF TX */
+			      <0 0x11000b00 0 0x80>;	/* AP DMA, BTIF RX */
+			interrupts = <GIC_SPI 114 IRQ_TYPE_LEVEL_LOW>,
+				     <GIC_SPI 139 IRQ_TYPE_LEVEL_LOW>,
+				     <GIC_SPI 140 IRQ_TYPE_LEVEL_LOW>;
+			clocks = <&infracfg CLK_INFRA_BTIF>,
+				 <&infracfg CLK_INFRA_AP_DMA>;
+			clock-names = "btifc", "apdmac";
+		};
+
+		consys@18070000 {
+			compatible = "mediatek,mt6771-consys";
+			reg = <0 0x18070000 0 0x1000>,	/* CONN_MCU_CONFIG */
+			      <0 0x10007000 0 0x100>,	/* TOPRGU */
+			      <0 0x10001000 0 0x1000>,	/* INFRACFG_AO */
+			      <0 0x10006000 0 0x1000>;	/* SPM */
+			interrupts = <GIC_SPI 289 IRQ_TYPE_LEVEL_LOW>,	/* BGF / BTIF wakeup */
+				     <GIC_SPI 291 IRQ_TYPE_LEVEL_LOW>;	/* consys WDT */
+			power-domains = <&spm MT8183_POWER_DOMAIN_CONN>;
+			vcn18-supply = <&mt6358_vcn18_reg>;
+			vcn28-supply = <&mt6358_vcn28_reg>;
+			/* one LDO feeds both; see &mt6358regulator below */
+			vcn33_bt-supply = <&mt6358_vcn33_reg>;
+			vcn33_wifi-supply = <&mt6358_vcn33_reg>;
+			pinctrl-names = "default", "gps_lna_state_init",
+					"gps_lna_state_oh", "gps_lna_state_ol";
+			pinctrl-0 = <&consys_pins_default>;
+			pinctrl-1 = <&gpslna_pins_init>;
+			pinctrl-2 = <&gpslna_pins_oh>;
+			pinctrl-3 = <&gpslna_pins_ol>;
+		};
+	};
+};
+
+/*
+ * The 6.4 MT6358 regulator driver registers a single "ldo_vcn33" (it keeps the BT
+ * and WIFI enable bits in sync itself); the ldo_vcn33_bt / ldo_vcn33_wifi nodes in
+ * mt6358.dtsi match nothing in this kernel.
+ */
+&mt6358regulator {
+	mt6358_vcn33_reg: ldo_vcn33 {
+		regulator-name = "vcn33";
+		regulator-min-microvolt = <3300000>;
+		regulator-max-microvolt = <3500000>;
+		regulator-enable-ramp-delay = <270>;
+	};
+};
+
+&pio {
+	consys_pins_default: consys-default-pins {
+	};
+
+	/* GPS LNA enable = GPIO155. The vendor driver parses "pins_cmd_dat/pinmux". */
+	gpslna_pins_init: gpslna-init-pins {
+		pins_cmd_dat {
+			pinmux = <PINMUX_GPIO155__FUNC_GPIO155>;
+			bias-disable;
+			output-low;
+		};
+	};
+
+	gpslna_pins_oh: gpslna-oh-pins {
+		pins_cmd_dat {
+			pinmux = <PINMUX_GPIO155__FUNC_GPIO155>;
+			output-high;
+		};
+	};
+
+	gpslna_pins_ol: gpslna-ol-pins {
+		pins_cmd_dat {
+			pinmux = <PINMUX_GPIO155__FUNC_GPIO155>;
+			output-low;
+		};
+	};
+};
+
+/*
+ * Wi-Fi function of the consys (vendor "wlan gen3" driver, host interface
+ * "ahb_sdioLike": memory-mapped registers + the CQDMA engine). The driver reads the
+ * raw "reg" and "interrupts" cells, so keep 2+2 address/size cells and 3-cell
+ * interrupt specifiers. hardware-values = <chip id, firmware load addr, start addr>.
+ * Vendor <&infracfg 78> "wifi-dma" is CLK_INFRA_CQ_DMA (77) in mainline numbering.
+ */
+/ {
+	soc {
+		wifi@180f0000 {
+			compatible = "mediatek,wifi";
+			reg = <0 0x180f0000 0 0x1100>,	/* HIF */
+			      <0 0x10212180 0 0x6c>,	/* CQDMA channel */
+			      <0 0x10001000 0 0x1000>,	/* INFRACFG_AO */
+			      <0 0x180e0000 0 0x70>;	/* conn remap/config */
+			interrupts = <GIC_SPI 290 IRQ_TYPE_LEVEL_LOW>,	/* HIF */
+				     <GIC_SPI 118 IRQ_TYPE_LEVEL_LOW>;	/* CQDMA */
+			clocks = <&infracfg CLK_INFRA_CQ_DMA>;
+			clock-names = "wifi-dma";
+			hardware-values = <0x788 0xa5800 0xa5800>;
+		};
+	};
+};

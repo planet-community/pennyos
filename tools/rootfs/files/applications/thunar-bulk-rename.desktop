@@ -1,0 +1,6 @@
+[Desktop Entry]
+# pennyos: hidden from the launcher; reachable from Thunar's context menu
+Type=Application
+Name=Bulk Rename
+Exec=thunar --bulk-rename %F
+NoDisplay=true

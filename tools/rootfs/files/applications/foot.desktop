@@ -1,0 +1,11 @@
+[Desktop Entry]
+# pennyos: the terminal under a name people look for
+Type=Application
+Name=Terminal
+GenericName=Terminal
+Comment=Foot terminal emulator
+Exec=foot
+Icon=foot
+Terminal=false
+Categories=System;TerminalEmulator;
+Keywords=shell;prompt;command;commandline;foot;

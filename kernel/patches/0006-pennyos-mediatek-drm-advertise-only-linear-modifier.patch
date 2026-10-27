@@ -1,0 +1,22 @@
+diff --git a/drivers/gpu/drm/mediatek/mtk_drm_plane.c b/drivers/gpu/drm/mediatek/mtk_drm_plane.c
+index 31f9420af..3292f25ac 100644
+--- a/drivers/gpu/drm/mediatek/mtk_drm_plane.c
++++ b/drivers/gpu/drm/mediatek/mtk_drm_plane.c
+@@ -19,11 +19,14 @@
+ #include "mtk_drm_gem.h"
+ #include "mtk_drm_plane.h"
+ 
++/*
++ * pennyos: LINEAR only. Upstream 6.4 advertises AFBC on every plane, but only
++ * OVLs with supports_afbc (MT8195) can scan it out; on MT8183/MT6771 an AFBC
++ * framebuffer is displayed as raw garbage. Compositors that honour IN_FORMATS
++ * (niri/smithay) pick AFBC when the GPU offers it.
++ */
+ static const u64 modifiers[] = {
+ 	DRM_FORMAT_MOD_LINEAR,
+-	DRM_FORMAT_MOD_ARM_AFBC(AFBC_FORMAT_MOD_BLOCK_SIZE_32x8 |
+-				AFBC_FORMAT_MOD_SPLIT |
+-				AFBC_FORMAT_MOD_SPARSE),
+ 	DRM_FORMAT_MOD_INVALID,
+ };
+ 

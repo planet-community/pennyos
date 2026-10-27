@@ -1,0 +1,37 @@
+#!/bin/sh
+# Bring up the Cosmo's built-in radio (run as root on the device).
+#   penny-conn-up          control layer only (modules + penny-wmtd)
+#   penny-conn-up bt       + open /dev/stpbt once: powers the consys on, downloads patches
+#   penny-conn-up wifi     + Wi-Fi driver, NVRAM calibration, power on -> wlan0
+D=/opt/pennyos/conn
+have() { grep -q "^$1 " /proc/modules; }
+for m in pennyos_shim btif wmt_drv; do
+  have $m || insmod $D/$m.ko || exit 1
+done
+pgrep -x penny-wmtd >/dev/null || { nohup /usr/local/bin/penny-wmtd > /tmp/wmtd.log 2>&1 & sleep 3; }
+cat /tmp/wmtd.log
+case "$1" in
+bt)
+  have bt_drv || insmod $D/bt_drv.ko || exit 1
+  # holding the device open for a few seconds is enough to trigger "function on"
+  timeout 40 sh -c 'exec 3<>/dev/stpbt && echo "stpbt opened" && sleep 5' ; echo "stpbt open rc=$?"
+  ;;
+wifi)
+  # 153 (the vendor default) is the SPI major in mainline; 155 is free here (154 = wmtdetect)
+  have wmt_chrdev_wifi || insmod $D/wmt_chrdev_wifi.ko WIFI_major=155 || exit 1
+  have wlan_drv_gen3 || insmod $D/wlan_drv_gen3.ko || exit 1
+  sleep 1
+  # calibration + MAC: the driver wants "WR-BUF:NVRAM" + exactly 1024 bytes in ONE write
+  NV=/opt/pennyos/conn/nvram/WIFI
+  if [ -f "$NV" ]; then
+    { printf 'WR-BUF:NVRAM'; head -c 1024 "$NV"; } > /tmp/wifi-nvram.buf
+    dd if=/tmp/wifi-nvram.buf of=/dev/wmtWifi bs=1036 count=1 2>/dev/null; echo "nvram write rc=$?"
+  else
+    echo "no $NV: Wi-Fi will run uncalibrated with a made-up MAC"
+  fi
+  printf 1 > /dev/wmtWifi; echo "wifi power-on write rc=$?"
+  sleep 3
+  ip -br link show | grep -E "wlan|p2p|ap0" || echo "no wlan interface"
+  ;;
+esac
+tail -8 /tmp/wmtd.log

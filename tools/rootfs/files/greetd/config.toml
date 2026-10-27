@@ -1,0 +1,11 @@
+# PennyOS login screen: greetd runs gtkgreet inside a bare niri instance.
+# niri (not cage) because it already knows the panel is mounted sideways and has
+# our keyboard layout and touch mapping.
+# VT 7, as in Debian's packaging (the unit displaces getty@tty7); tty1 keeps its
+# getty, where a login still starts niri through ~/.profile as a fallback.
+[terminal]
+vt = 7
+
+[default_session]
+command = "/usr/local/bin/penny-greeter"
+user = "_greetd"

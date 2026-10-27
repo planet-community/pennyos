@@ -1,0 +1,6 @@
+[Desktop Entry]
+# pennyos: hidden from the launcher; reachable from Settings and Thunar's Edit menu
+Type=Application
+Name=Thunar Preferences
+Exec=thunar-settings
+NoDisplay=true

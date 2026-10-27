@@ -1,0 +1,3440 @@
+diff --git a/.gitignore b/.gitignore
+new file mode 100644
+index 0000000..ad3d901
+--- /dev/null
++++ b/.gitignore
+@@ -0,0 +1,12 @@
++# kbuild products of the out-of-tree module build
++*.o
++*.ko
++*.mod
++*.mod.c
++*.cmd
++*.a
++.*.d
++Module.symvers
++modules.order
++build.log
++.build-tmp/
+diff --git a/Kbuild b/Kbuild
+new file mode 100644
+index 0000000..52d072c
+--- /dev/null
++++ b/Kbuild
+@@ -0,0 +1,39 @@
++# SPDX-License-Identifier: GPL-2.0
++#
++# pennyos: out-of-tree build of the MediaTek connectivity stack
++# (BTIF + WMT/STP + BT char driver + Wi-Fi "wlan gen3") against mainline
++# Linux 6.4.
++#
++# The vendor Makefiles are left untouched next to the Kbuild files; kbuild
++# prefers a "Kbuild" file over "Makefile", so only the Kbuild files are used.
++#
++# Vendor configuration reproduced here (Planet Cosmo Communicator, MT6771):
++#   CONFIG_MTK_PLATFORM="mt6771"  CONFIG_MTK_COMBO_CHIP="CONSYS_6771"
++#   CONFIG_MTK_COMBO=m  CONFIG_MTK_BTIF  CONFIG_MTK_COMBO_BT  CONFIG_MTK_COMBO_WIFI
++
++PENNYOS_ROOT := $(src)
++
++# Vendor Kconfig symbols that the sources test with #ifdef and that the
++# vendor defconfig sets.  They do not exist in mainline, so pass them as -D.
++PENNYOS_VENDOR_CONFIG := \
++	-DCONFIG_MACH_MT6771=1 \
++	-DCONFIG_MTK_COMBO=1 \
++	-DCONFIG_MTK_BTIF=1 \
++	-DCONFIG_MTK_COMBO_BT=1 \
++	-DCONFIG_MTK_COMBO_GPS=1 \
++	-DCONFIG_MTK_COMBO_WIFI=1 \
++	-DCONFIG_MTK_FMRADIO=1 \
++	-DCONFIG_MTK_EMI=1 \
++	-DCONFIG_MTK_GIC_V3_EXT=1
++
++subdir-ccflags-y += $(PENNYOS_VENDOR_CONFIG)
++subdir-ccflags-y += -I$(PENNYOS_ROOT)/compat/include -I$(PENNYOS_ROOT)/compat
++subdir-ccflags-y += -include $(PENNYOS_ROOT)/compat/pennyos_compat.h
++# The vendor tree builds with -Werror; this port does not.
++subdir-ccflags-y += -Wno-error
++
++export PENNYOS_ROOT
++
++obj-m += compat/
++obj-m += btif/
++obj-m += connectivity/
+diff --git a/btif/Kbuild b/btif/Kbuild
+new file mode 100644
+index 0000000..b3b2db6
+--- /dev/null
++++ b/btif/Kbuild
+@@ -0,0 +1,5 @@
++# SPDX-License-Identifier: GPL-2.0
++# pennyos replacement for btif/Makefile (which only does obj-y).
++# CONFIG_MTK_ENG_BUILD is not set in the vendor config -> BTIF_DBG_SUPPORT=0
++subdir-ccflags-y += -D BTIF_DBG_SUPPORT=0
++obj-m += common/
+diff --git a/btif/common/Kbuild b/btif/common/Kbuild
+new file mode 100644
+index 0000000..f032dd6
+--- /dev/null
++++ b/btif/common/Kbuild
+@@ -0,0 +1,8 @@
++# SPDX-License-Identifier: GPL-2.0
++# pennyos replacement for btif/common/Makefile: same objects, built as a
++# module instead of obj-y.  Module name kept from the vendor ("btif").
++ccflags-y += -I$(src)/inc
++ccflags-y += -I$(src)/plat_inc
++
++obj-m += btif.o
++btif-y := mtk_btif.o mtk_btif_exp.o btif_dma_plat.o btif_plat.o
+diff --git a/btif/common/mtk_btif.c b/btif/common/mtk_btif.c
+index 1f5bc40..ad87910 100644
+--- a/btif/common/mtk_btif.c
++++ b/btif/common/mtk_btif.c
+@@ -498,7 +498,7 @@ static int btif_chrdev_init(void)
+ 	}
+ 	BTIF_INFO_FUNC("add btif dev to kernel succeed\n");
+ 
+-	p_btif_class = class_create(THIS_MODULE, p_btif_dev_name);
++	p_btif_class = class_create(p_btif_dev_name);
+ 	if (IS_ERR(p_btif_class)) {
+ 		BTIF_ERR_FUNC("error happened when doing class_create\n");
+ 		unregister_chrdev_region(btif_dev, 1);
+diff --git a/build.sh b/build.sh
+new file mode 100644
+index 0000000..96f1710
+--- /dev/null
++++ b/build.sh
+@@ -0,0 +1,207 @@
++#!/bin/bash
++# pennyos: build the MediaTek connectivity modules out of tree against a
++# configured + built kernel tree.
++#
++#   compat/pennyos_shim.ko                     stubs for vendor-kernel-only services
++#   btif/common/btif.ko                          BTIF driver
++#   connectivity/common/wmt_drv.ko               WMT/STP control layer (+ vendor "connadp" glue)
++#   connectivity/bt/mt66xx/bt_drv.ko             Bluetooth char driver (/dev/stpbt)
++#   connectivity/wlan/adaptor/wmt_chrdev_wifi.ko Wi-Fi power/mode char driver (/dev/wmtWifi)
++#   connectivity/wlan/core/gen3/wlan_drv_gen3.ko Wi-Fi driver (cfg80211)
++#
++# Usage (inside the cosmo-kbuild container):
++#   bash /c/conn/build.sh
++# Environment:
++#   KDIR=/src          kernel build tree (must contain .config and Module.symvers)
++#   CROSS_COMPILE=aarch64-linux-gnu-
++#   JOBS=$(nproc)
++#   NOCLEAN=1          skip the initial "make clean" (incremental build)
++#   KEEP_GOING=1       pass -k to make (collect all errors)
++#
++# Always builds from clean unless NOCLEAN=1.  Exits non-zero on any failure:
++# any compiler error, any modpost error, any undefined symbol in the four
++# control-layer modules, and any undefined symbol in the two Wi-Fi modules
++# that is not explained by cfg80211 being disabled in the kernel (see below).
++#
++# Wi-Fi modules and cfg80211
++# --------------------------
++# The Wi-Fi driver needs these kernel options (WIFI_KCONFIG below).  If the
++# kernel in $KDIR has CONFIG_CFG80211 disabled, the Wi-Fi modules are built in
++# "compile-check mode": the Kbuild files pass the missing options as -D so the
++# code is compiled whole, and the modules end up with undefined references to
++# the cfg80211 / wireless-extensions exports.  That is reported (with the
++# list) and is not a failure, but such a wlan_drv_gen3.ko MUST NOT be loaded:
++# besides the missing symbols, struct net_device / struct cfg80211_ops have a
++# different layout than the running kernel's.  Any other undefined symbol is a
++# failure.
++# If the kernel has CONFIG_CFG80211, nothing is assumed: every option in
++# WIFI_KCONFIG must be set and no undefined symbol is tolerated.
++set -euo pipefail
++
++HERE=$(cd "$(dirname "$0")" && pwd)
++KDIR=${KDIR:-/src}
++CROSS_COMPILE=${CROSS_COMPILE:-aarch64-linux-gnu-}
++JOBS=${JOBS:-$(nproc)}
++LOG="$HERE/build.log"
++MAKE_ARGS=(-C "$KDIR" M="$HERE" ARCH=arm64 CROSS_COMPILE="$CROSS_COMPILE")
++
++MODULES=(
++	compat/pennyos_shim.ko
++	btif/common/btif.ko
++	connectivity/common/wmt_drv.ko
++	connectivity/bt/mt66xx/bt_drv.ko
++)
++WIFI_MODULES=(
++	connectivity/wlan/adaptor/wmt_chrdev_wifi.ko
++	connectivity/wlan/core/gen3/wlan_drv_gen3.ko
++)
++# kernel options the Wi-Fi driver is written against
++WIFI_KCONFIG=(CFG80211 NL80211_TESTMODE WIRELESS_EXT WEXT_CORE WEXT_PRIV)
++
++if [ ! -f "$KDIR/Module.symvers" ] || [ ! -f "$KDIR/.config" ]; then
++	echo "build.sh: $KDIR is not a configured and built kernel tree" >&2
++	exit 1
++fi
++
++kconfig_set() {	# <OPTION without CONFIG_>
++	grep -q -E "^CONFIG_$1=[ym]" "$KDIR/.config"
++}
++
++wifi_missing=()
++for o in "${WIFI_KCONFIG[@]}"; do
++	kconfig_set "$o" || wifi_missing+=("CONFIG_$o")
++done
++if kconfig_set CFG80211; then
++	wifi_mode=real
++	if [ ${#wifi_missing[@]} -ne 0 ]; then
++		echo "build.sh: the kernel has CONFIG_CFG80211 but lacks: ${wifi_missing[*]}" >&2
++		echo "          (required by wlan_drv_gen3; they change struct layouts, so they cannot be assumed)" >&2
++		echo "BUILD FAILED (kernel configuration)"
++		exit 1
++	fi
++else
++	wifi_mode=compile-check
++fi
++
++if [ "${NOCLEAN:-0}" != 1 ]; then
++	make "${MAKE_ARGS[@]}" clean >/dev/null
++fi
++
++# KBUILD_MODPOST_WARN: let modpost finish and link the modules even with
++# unresolved symbols; they are checked (strictly) below instead.
++set +e
++make "${MAKE_ARGS[@]}" -j"$JOBS" ${KEEP_GOING:+-k} KBUILD_MODPOST_WARN=1 modules >"$LOG" 2>&1
++rc=$?
++set -e
++
++nerr=$(grep -c -E '(error:|ERROR:)' "$LOG" || true)
++nwarn=$(grep -c 'warning:' "$LOG" || true)
++
++echo "kernel:   $(make -s -C "$KDIR" ARCH=arm64 kernelrelease 2>/dev/null || echo '?')  ($KDIR)"
++echo "compiler: $("${CROSS_COMPILE}gcc" --version | head -1)"
++echo "errors: $nerr   warnings: $nwarn   (log: $LOG)"
++
++if [ $rc -ne 0 ] || [ "$nerr" -ne 0 ]; then
++	grep -E '(error:|ERROR:|\*\*\*)' "$LOG" | head -"${ERRLINES:-60}" || true
++	echo "BUILD FAILED (make exit $rc)"
++	exit 1
++fi
++
++modinfo_field() {	# <file.ko> <field>
++	"${CROSS_COMPILE}objcopy" -O binary --only-section=.modinfo "$1" /dev/stdout |
++		tr '\0' '\n' | sed -n "s/^$2=//p" | paste -sd, -
++}
++
++fail=0
++printf '\n%-46s %10s  %-18s %s\n' MODULE SIZE VERMAGIC DEPENDS
++for m in "${MODULES[@]}" "${WIFI_MODULES[@]}"; do
++	f="$HERE/$m"
++	if [ ! -s "$f" ]; then
++		printf '%-46s %10s\n' "$m" MISSING
++		fail=1
++		continue
++	fi
++	vm=$(modinfo_field "$f" vermagic)
++	printf '%-46s %10d  %-18s %s\n' "$m" "$(stat -c %s "$f")" "${vm%% *}" \
++		"$(modinfo_field "$f" depends)"
++done
++[ $fail -eq 0 ] || { echo "BUILD FAILED (module file missing)"; exit 1; }
++
++# ---------------------------------------------------------------------------
++# Undefined symbols: everything a module imports must be exported by the
++# kernel ($KDIR/Module.symvers) or by one of our modules ($HERE/Module.symvers).
++# ---------------------------------------------------------------------------
++TMP="$HERE/.build-tmp"
++mkdir -p "$TMP"
++awk -F'\t' '{print $2}' "$KDIR/Module.symvers" "$HERE/Module.symvers" | sort -u >"$TMP/exported"
++
++# Symbols that cfg80211 / wireless extensions / rfkill export in this kernel
++# version, taken from the kernel sources when they are available.
++: >"$TMP/wireless"
++if [ -d "$KDIR/net/wireless" ]; then
++	cat "$KDIR"/net/wireless/*.c "$KDIR"/net/rfkill/*.c 2>/dev/null |
++		sed -n 's/^EXPORT_SYMBOL\(_GPL\)\?(\([A-Za-z0-9_]*\)).*/\2/p' | sort -u >"$TMP/wireless"
++fi
++is_wireless_sym() {	# <symbol>
++	if [ -s "$TMP/wireless" ]; then
++		grep -q -x -F "$1" "$TMP/wireless"
++	else
++		[[ "$1" =~ ^(__)?(cfg80211|wiphy|ieee80211|nl80211|regulatory|wireless|iw_handler|rfkill)_ ]]
++	fi
++}
++
++undefined_of() {	# <file.ko>
++	"${CROSS_COMPILE}nm" -u "$1" | awk '{print $NF}' | sort -u | comm -23 - "$TMP/exported"
++}
++
++echo
++for m in "${MODULES[@]}"; do
++	u=$(undefined_of "$HERE/$m")
++	if [ -n "$u" ]; then
++		echo "$m: UNDEFINED symbols:"
++		echo "$u" | sed 's/^/    /'
++		fail=1
++	fi
++done
++[ $fail -eq 0 ] && echo "control-layer modules: 0 undefined symbols"
++
++wifi_expected=0
++for m in "${WIFI_MODULES[@]}"; do
++	u=$(undefined_of "$HERE/$m")
++	[ -n "$u" ] || continue
++	bad=""
++	good=""
++	for s in $u; do
++		if [ "$wifi_mode" = compile-check ] && is_wireless_sym "$s"; then
++			good+="$s"$'\n'
++		else
++			bad+="$s"$'\n'
++		fi
++	done
++	if [ -n "$good" ]; then
++		wifi_expected=1
++		echo "$m: $(printf '%s' "$good" | wc -l) undefined cfg80211/wireless symbols (expected: kernel has no CONFIG_CFG80211):"
++		printf '%s' "$good" | sed 's/^/    /'
++	fi
++	if [ -n "$bad" ]; then
++		echo "$m: UNDEFINED symbols:"
++		printf '%s' "$bad" | sed 's/^/    /'
++		fail=1
++	fi
++done
++[ $fail -eq 0 ] || { echo "BUILD FAILED (undefined symbols)"; exit 1; }
++
++if [ "$wifi_mode" = compile-check ]; then
++	echo
++	echo "Wi-Fi modules: COMPILE-CHECK ONLY.  The kernel in $KDIR lacks: ${wifi_missing[*]}"
++	echo "  Do not load wlan_drv_gen3.ko from this build; enable the options above,"
++	echo "  rebuild the kernel, then rerun this script."
++	[ $wifi_expected -eq 1 ] || echo "  (no undefined wireless symbols were found, which is unexpected)"
++else
++	echo "Wi-Fi modules: 0 undefined symbols"
++fi
++
++echo
++echo "load order: pennyos_shim -> btif -> wmt_drv -> bt_drv"
++echo "            (cfg80211 ->) wmt_chrdev_wifi -> wlan_drv_gen3"
++echo "BUILD OK"
+diff --git a/compat/Kbuild b/compat/Kbuild
+new file mode 100644
+index 0000000..b552092
+--- /dev/null
++++ b/compat/Kbuild
+@@ -0,0 +1,3 @@
++# SPDX-License-Identifier: GPL-2.0
++# Stubs for vendor-kernel-only services (see pennyos_shim.c).
++obj-m += pennyos_shim.o
+diff --git a/compat/include/aee.h b/compat/include/aee.h
+new file mode 100644
+index 0000000..5501db7
+--- /dev/null
++++ b/compat/include/aee.h
+@@ -0,0 +1,2 @@
++/* pennyos: vendor-kernel-only header; its services are stubbed in the shim. */
++#include "pennyos_shim.h"
+diff --git a/compat/include/conn_md_exp.h b/compat/include/conn_md_exp.h
+new file mode 100644
+index 0000000..5501db7
+--- /dev/null
++++ b/compat/include/conn_md_exp.h
+@@ -0,0 +1,2 @@
++/* pennyos: vendor-kernel-only header; its services are stubbed in the shim. */
++#include "pennyos_shim.h"
+diff --git a/compat/include/helio-dvfsrc-opp.h b/compat/include/helio-dvfsrc-opp.h
+new file mode 100644
+index 0000000..5501db7
+--- /dev/null
++++ b/compat/include/helio-dvfsrc-opp.h
+@@ -0,0 +1,2 @@
++/* pennyos: vendor-kernel-only header; its services are stubbed in the shim. */
++#include "pennyos_shim.h"
+diff --git a/compat/include/legacy_controller.h b/compat/include/legacy_controller.h
+new file mode 100644
+index 0000000..5501db7
+--- /dev/null
++++ b/compat/include/legacy_controller.h
+@@ -0,0 +1,2 @@
++/* pennyos: vendor-kernel-only header; its services are stubbed in the shim. */
++#include "pennyos_shim.h"
+diff --git a/compat/include/linux/irqchip/mtk-gic-extend.h b/compat/include/linux/irqchip/mtk-gic-extend.h
+new file mode 100644
+index 0000000..5501db7
+--- /dev/null
++++ b/compat/include/linux/irqchip/mtk-gic-extend.h
+@@ -0,0 +1,2 @@
++/* pennyos: vendor-kernel-only header; its services are stubbed in the shim. */
++#include "pennyos_shim.h"
+diff --git a/compat/include/linux/wakelock.h b/compat/include/linux/wakelock.h
+new file mode 100644
+index 0000000..6bdfd38
+--- /dev/null
++++ b/compat/include/linux/wakelock.h
+@@ -0,0 +1,4 @@
++/* pennyos: <linux/wakelock.h> does not exist in mainline.  The vendor code
++ * only includes it; the wake locks it actually takes go through the
++ * wakeup_source API (see pennyos_compat.h). */
++#include <linux/pm_wakeup.h>
+diff --git a/compat/include/mt-plat/aee.h b/compat/include/mt-plat/aee.h
+new file mode 100644
+index 0000000..5501db7
+--- /dev/null
++++ b/compat/include/mt-plat/aee.h
+@@ -0,0 +1,2 @@
++/* pennyos: vendor-kernel-only header; its services are stubbed in the shim. */
++#include "pennyos_shim.h"
+diff --git a/compat/include/mt_emi_api.h b/compat/include/mt_emi_api.h
+new file mode 100644
+index 0000000..5501db7
+--- /dev/null
++++ b/compat/include/mt_emi_api.h
+@@ -0,0 +1,2 @@
++/* pennyos: vendor-kernel-only header; its services are stubbed in the shim. */
++#include "pennyos_shim.h"
+diff --git a/compat/include/mtk_clkbuf_ctl.h b/compat/include/mtk_clkbuf_ctl.h
+new file mode 100644
+index 0000000..5501db7
+--- /dev/null
++++ b/compat/include/mtk_clkbuf_ctl.h
+@@ -0,0 +1,2 @@
++/* pennyos: vendor-kernel-only header; its services are stubbed in the shim. */
++#include "pennyos_shim.h"
+diff --git a/compat/include/mtk_hibernate_dpm.h b/compat/include/mtk_hibernate_dpm.h
+new file mode 100644
+index 0000000..5501db7
+--- /dev/null
++++ b/compat/include/mtk_hibernate_dpm.h
+@@ -0,0 +1,2 @@
++/* pennyos: vendor-kernel-only header; its services are stubbed in the shim. */
++#include "pennyos_shim.h"
+diff --git a/compat/include/mtk_io.h b/compat/include/mtk_io.h
+new file mode 100644
+index 0000000..b08ed47
+--- /dev/null
++++ b/compat/include/mtk_io.h
+@@ -0,0 +1,2 @@
++/* pennyos: forward to the pristine vendor header (macros/types only). */
++#include "../../vendor-include/include/mt-plat/mtk_io.h"
+diff --git a/compat/include/mtk_lpae.h b/compat/include/mtk_lpae.h
+new file mode 100644
+index 0000000..f319167
+--- /dev/null
++++ b/compat/include/mtk_lpae.h
+@@ -0,0 +1,2 @@
++/* pennyos: forward to the pristine vendor header (macros/types only). */
++#include "../../vendor-include/include/mt-plat/mtk_lpae.h"
+diff --git a/compat/include/mtk_rtc.h b/compat/include/mtk_rtc.h
+new file mode 100644
+index 0000000..5501db7
+--- /dev/null
++++ b/compat/include/mtk_rtc.h
+@@ -0,0 +1,2 @@
++/* pennyos: vendor-kernel-only header; its services are stubbed in the shim. */
++#include "pennyos_shim.h"
+diff --git a/compat/include/mtk_sleep.h b/compat/include/mtk_sleep.h
+new file mode 100644
+index 0000000..5501db7
+--- /dev/null
++++ b/compat/include/mtk_sleep.h
+@@ -0,0 +1,2 @@
++/* pennyos: vendor-kernel-only header; its services are stubbed in the shim. */
++#include "pennyos_shim.h"
+diff --git a/compat/include/mtk_spm_resource_req.h b/compat/include/mtk_spm_resource_req.h
+new file mode 100644
+index 0000000..5501db7
+--- /dev/null
++++ b/compat/include/mtk_spm_resource_req.h
+@@ -0,0 +1,2 @@
++/* pennyos: vendor-kernel-only header; its services are stubbed in the shim. */
++#include "pennyos_shim.h"
+diff --git a/compat/include/mtk_wcn_cmb_stub.h b/compat/include/mtk_wcn_cmb_stub.h
+new file mode 100644
+index 0000000..5995d73
+--- /dev/null
++++ b/compat/include/mtk_wcn_cmb_stub.h
+@@ -0,0 +1,2 @@
++/* pennyos: forward to the pristine vendor header (macros/types only). */
++#include "../../vendor-include/include/mt-plat/mtk_wcn_cmb_stub.h"
+diff --git a/compat/include/sdio_ops.h b/compat/include/sdio_ops.h
+new file mode 100644
+index 0000000..5501db7
+--- /dev/null
++++ b/compat/include/sdio_ops.h
+@@ -0,0 +1,2 @@
++/* pennyos: vendor-kernel-only header; its services are stubbed in the shim. */
++#include "pennyos_shim.h"
+diff --git a/compat/include/stddef.h b/compat/include/stddef.h
+new file mode 100644
+index 0000000..779eff3
+--- /dev/null
++++ b/compat/include/stddef.h
+@@ -0,0 +1,2 @@
++/* pennyos: kernel builds have no libc <stddef.h>; offsetof() etc. come from here. */
++#include <linux/stddef.h>
+diff --git a/compat/include/sync_write.h b/compat/include/sync_write.h
+new file mode 100644
+index 0000000..fe691d1
+--- /dev/null
++++ b/compat/include/sync_write.h
+@@ -0,0 +1,2 @@
++/* pennyos: forward to the pristine vendor header (macros/types only). */
++#include "../../vendor-include/include/mt-plat/sync_write.h"
+diff --git a/compat/include/upmu_common.h b/compat/include/upmu_common.h
+new file mode 100644
+index 0000000..5501db7
+--- /dev/null
++++ b/compat/include/upmu_common.h
+@@ -0,0 +1,2 @@
++/* pennyos: vendor-kernel-only header; its services are stubbed in the shim. */
++#include "pennyos_shim.h"
+diff --git a/compat/pennyos_compat.h b/compat/pennyos_compat.h
+new file mode 100644
+index 0000000..2db9d9b
+--- /dev/null
++++ b/compat/pennyos_compat.h
+@@ -0,0 +1,155 @@
++/* SPDX-License-Identifier: GPL-2.0 */
++/*
++ * pennyos_compat.h - maps Linux 4.4-era kernel APIs used by the MediaTek
++ * connectivity drivers onto Linux 6.4.
++ *
++ * Force-included (-include) into every translation unit from the top-level
++ * Kbuild.  Only APIs that mainline removed or renamed live here; services
++ * that only ever existed in the MediaTek vendor kernel are in
++ * pennyos_shim.[ch].
++ */
++#ifndef _PENNYOS_COMPAT_H_
++#define _PENNYOS_COMPAT_H_
++
++#ifndef __ASSEMBLY__
++
++#include <linux/version.h>
++#include <linux/types.h>
++#include <linux/kernel.h>
++#include <linux/string.h>
++#include <linux/time.h>
++#include <linux/ktime.h>
++#include <linux/timekeeping.h>
++#include <linux/rtc.h>
++#include <linux/io.h>
++#include <linux/device.h>
++#include <linux/dma-mapping.h>
++#include <linux/pm_wakeup.h>
++#include <linux/sched.h>
++#include <linux/sched/clock.h>		/* local_clock() */
++#include <linux/sched/signal.h>		/* signal_pending(), for_each_process() */
++#include <linux/sched/debug.h>		/* show_stack() prototype */
++#include <linux/sched/task.h>
++#include <linux/uaccess.h>
++#include <linux/vmalloc.h>
++#include <linux/slab.h>
++
++/* ------------------------------------------------------------------------
++ * struct timeval / struct timespec / do_gettimeofday()
++ *
++ * Removed from the kernel in 5.x.  The drivers only use them for log time
++ * stamps and elapsed-time arithmetic, so plain structs filled from the
++ * 64-bit clock are equivalent (tv_sec is 64 bit on arm64).
++ * ------------------------------------------------------------------------ */
++struct timeval {
++	__kernel_old_time_t	tv_sec;		/* seconds */
++	__kernel_suseconds_t	tv_usec;	/* microseconds */
++};
++
++struct timespec {
++	__kernel_old_time_t	tv_sec;		/* seconds */
++	long			tv_nsec;	/* nanoseconds */
++};
++
++static inline void do_gettimeofday(struct timeval *tv)
++{
++	struct timespec64 now;
++
++	ktime_get_real_ts64(&now);
++	tv->tv_sec = now.tv_sec;
++	tv->tv_usec = now.tv_nsec / NSEC_PER_USEC;
++}
++
++static inline struct timespec ktime_to_timespec(ktime_t kt)
++{
++	struct timespec64 ts64 = ktime_to_timespec64(kt);
++	struct timespec ts = { .tv_sec = ts64.tv_sec, .tv_nsec = ts64.tv_nsec };
++
++	return ts;
++}
++
++/* rtc_time_to_tm(unsigned long, struct rtc_time *) -> rtc_time64_to_tm() */
++#define rtc_time_to_tm(time, tm)	rtc_time64_to_tm((time64_t)(time), (tm))
++
++/* ------------------------------------------------------------------------
++ * I/O mapping, DMA
++ * ------------------------------------------------------------------------ */
++#define ioremap_nocache(addr, size)	ioremap((addr), (size))
++
++/* dma_alloc_coherent() always returns zeroed memory since 5.0 */
++#define dma_zalloc_coherent(dev, size, handle, gfp) \
++	dma_alloc_coherent((dev), (size), (handle), (gfp))
++
++/* ------------------------------------------------------------------------
++ * driver attributes: DRIVER_ATTR() was removed in 4.14 (only the _RW/_RO/_WO
++ * forms remain).  This is the 4.4 definition.
++ * ------------------------------------------------------------------------ */
++#ifndef DRIVER_ATTR
++#define DRIVER_ATTR(_name, _mode, _show, _store) \
++	struct driver_attribute driver_attr_##_name = \
++		__ATTR(_name, _mode, _show, _store)
++#endif
++
++/* ------------------------------------------------------------------------
++ * wakeup sources (what Android wakelocks were built on in 4.4)
++ *
++ * 4.4: wakeup_source_register(name), wakeup_source_init(ws, name) for an
++ *      embedded struct wakeup_source, wakeup_source_trash(ws).
++ * 6.4: wakeup_source_register(dev, name); the embedded-struct helpers were
++ *      removed but wakeup_source_add()/wakeup_source_remove() remain.
++ * ------------------------------------------------------------------------ */
++#define wakeup_source_register(name)	wakeup_source_register(NULL, (name))
++
++static inline void wakeup_source_init(struct wakeup_source *ws, const char *name)
++{
++	if (ws) {
++		memset(ws, 0, sizeof(*ws));
++		ws->name = name;
++	}
++	wakeup_source_add(ws);
++}
++
++static inline void wakeup_source_trash(struct wakeup_source *ws)
++{
++	wakeup_source_remove(ws);
++	__pm_relax(ws);
++}
++
++/* ------------------------------------------------------------------------
++ * Wi-Fi driver (wlan gen3) additions
++ * ------------------------------------------------------------------------ */
++
++/* get_monotonic_boottime(struct timespec *) was removed in 5.x */
++static inline void get_monotonic_boottime(struct timespec *ts)
++{
++	struct timespec64 now;
++
++	ktime_get_boottime_ts64(&now);
++	ts->tv_sec = now.tv_sec;
++	ts->tv_nsec = now.tv_nsec;
++}
++
++/* netif_rx_ni() was folded into netif_rx() in 5.18 (netif_rx() may now be
++ * called from any context).
++ */
++#define netif_rx_ni(skb)	netif_rx(skb)
++
++/* MODULE_SUPPORTED_DEVICE() was a no-op and was removed in 5.12 */
++#ifndef MODULE_SUPPORTED_DEVICE
++#define MODULE_SUPPORTED_DEVICE(name)
++#endif
++
++/*
++ * set_fs()/get_fs()/mm_segment_t were removed in 5.10/5.18.  The drivers
++ * only used them to bracket in-kernel file I/O on kernel buffers; every such
++ * call site now uses kernel_read()/kernel_write(), which need no address
++ * limit switch, so the bracketing calls are no-ops.
++ */
++typedef struct { int unused; } mm_segment_t;
++#define KERNEL_DS	((mm_segment_t) { 0 })
++#define get_ds()	KERNEL_DS
++#define get_fs()	KERNEL_DS
++#define set_fs(x)	((void)(x))
++
++#endif /* !__ASSEMBLY__ */
++#endif /* _PENNYOS_COMPAT_H_ */
+diff --git a/compat/pennyos_shim.c b/compat/pennyos_shim.c
+new file mode 100644
+index 0000000..13bc5fa
+--- /dev/null
++++ b/compat/pennyos_shim.c
+@@ -0,0 +1,360 @@
++// SPDX-License-Identifier: GPL-2.0
++/*
++ * pennyos_shim.c - logging stubs for MediaTek vendor-kernel-only services
++ * used by the connectivity drivers (btif, wmt_drv, bt_drv).
++ *
++ * None of these services exist in mainline Linux.  Each stub prints its name
++ * and arguments once (pr_info) so that it is visible on the device which of
++ * them the drivers really call, and returns the value the vendor
++ * implementation returns on success.  Each one needs a real implementation
++ * (or a decision that it is not needed) during hardware bring-up.
++ */
++#undef pr_fmt
++#define pr_fmt(fmt) "pennyos_shim: " fmt
++
++#include <linux/kernel.h>
++#include <linux/module.h>
++#include <linux/printk.h>
++#include <linux/stdarg.h>
++#include <linux/of.h>
++#include <linux/of_platform.h>
++#include <linux/platform_device.h>
++#include <linux/regmap.h>
++
++#include "pennyos_shim.h"
++
++/* print "<function>(<args>) [stub]" the first time each stub is reached */
++#define SHIM_STUB_CALLED(fmt, ...) \
++	pr_info_once("%s(" fmt ") [stub]\n", __func__, ##__VA_ARGS__)
++
++/* ------------------------------------------------------------------------
++ * AEE / AED
++ * ------------------------------------------------------------------------ */
++
++/* TODO(pennyos): real implementation */
++void aee_kernel_warning_api(const char *file, const int line, const int db_opt,
++			    const char *module, const char *msg, ...)
++{
++	SHIM_STUB_CALLED("file=%s, line=%d, db_opt=0x%x, module=%s, msg=%s",
++			 file, line, db_opt, module, msg);
++}
++EXPORT_SYMBOL(aee_kernel_warning_api);
++
++/* TODO(pennyos): real implementation */
++void aee_kernel_dal_api(const char *file, const int line, const char *msg)
++{
++	SHIM_STUB_CALLED("file=%s, line=%d, msg=%s", file, line, msg);
++}
++EXPORT_SYMBOL(aee_kernel_dal_api);
++
++/* TODO(pennyos): real implementation */
++void aed_combo_exception_api(const int *log, int log_size, const int *phy,
++			     int phy_size, const char *detail, const int db_opt)
++{
++	SHIM_STUB_CALLED("log=%p, log_size=%d, phy=%p, phy_size=%d, detail=%p, db_opt=0x%x",
++			 log, log_size, phy, phy_size, detail, db_opt);
++}
++EXPORT_SYMBOL(aed_combo_exception_api);
++
++/* ------------------------------------------------------------------------
++ * PMIC raw register access
++ * ------------------------------------------------------------------------ */
++
++/* TODO(pennyos): real implementation */
++unsigned int pmic_read_interface(unsigned int RegNum, unsigned int *val,
++				 unsigned int MASK, unsigned int SHIFT)
++{
++	SHIM_STUB_CALLED("RegNum=0x%x, val=%p, MASK=0x%x, SHIFT=%u",
++			 RegNum, val, MASK, SHIFT);
++	if (val)
++		*val = 0;
++	return 0;
++}
++EXPORT_SYMBOL(pmic_read_interface);
++
++/* TODO(pennyos): real implementation */
++unsigned int pmic_config_interface(unsigned int RegNum, unsigned int val,
++				   unsigned int MASK, unsigned int SHIFT)
++{
++	SHIM_STUB_CALLED("RegNum=0x%x, val=0x%x, MASK=0x%x, SHIFT=%u",
++			 RegNum, val, MASK, SHIFT);
++	return 0;
++}
++EXPORT_SYMBOL(pmic_config_interface);
++
++static const char *shim_pmu_flag_name(PMU_FLAGS_LIST_ENUM flagname)
++{
++	switch (flagname) {
++	case PMIC_RG_LDO_VCN28_HW0_OP_EN:
++		return "PMIC_RG_LDO_VCN28_HW0_OP_EN";
++	case PMIC_RG_LDO_VCN28_HW0_OP_CFG:
++		return "PMIC_RG_LDO_VCN28_HW0_OP_CFG";
++	default:
++		return "?";
++	}
++}
++
++/*
++ * MT6358 register access. In mainline the PMIC sits behind the pwrap bus, whose
++ * driver owns the regmap; the MFD core device ("mediatek,mt6358") is its child.
++ */
++static struct regmap *shim_pmic_regmap(void)
++{
++	static struct regmap *map;
++	struct device_node *np;
++	struct platform_device *pdev;
++
++	if (map)
++		return map;
++	np = of_find_compatible_node(NULL, NULL, "mediatek,mt6358");
++	if (!np)
++		return NULL;
++	pdev = of_find_device_by_node(np);
++	of_node_put(np);
++	if (!pdev)
++		return NULL;
++	map = dev_get_regmap(pdev->dev.parent, NULL);
++	if (!map)
++		pr_err("no regmap behind the MT6358 device\n");
++	return map;
++}
++
++static int shim_pmic_update(unsigned int reg, unsigned int mask, unsigned int val)
++{
++	struct regmap *map = shim_pmic_regmap();
++	unsigned int before = 0, after = 0;
++	int ret;
++
++	if (!map) {
++		pr_err("PMIC regmap unavailable, reg 0x%x not written\n", reg);
++		return -ENODEV;
++	}
++	regmap_read(map, reg, &before);
++	ret = regmap_update_bits(map, reg, mask, val);
++	regmap_read(map, reg, &after);
++	pr_info("pmic reg 0x%04x: 0x%04x -> 0x%04x (mask 0x%x val 0x%x) ret %d\n",
++		reg, before, after, mask, val, ret);
++	return ret;
++}
++
++unsigned short pmic_set_register_value(PMU_FLAGS_LIST_ENUM flagname,
++				       unsigned int val)
++{
++	/* both fields used by the consys code are 1 bit wide at shift 1 */
++	switch (flagname) {
++	case PMIC_RG_LDO_VCN28_HW0_OP_EN:
++		shim_pmic_update(MT6358_LDO_VCN28_OP_EN, 0x1 << 1, (val & 0x1) << 1);
++		break;
++	case PMIC_RG_LDO_VCN28_HW0_OP_CFG:
++		shim_pmic_update(MT6358_LDO_VCN28_OP_CFG, 0x1 << 1, (val & 0x1) << 1);
++		break;
++	default:
++		pr_err("pmic_set_register_value: unknown field %d\n", flagname);
++		break;
++	}
++	return 0;
++}
++EXPORT_SYMBOL(pmic_set_register_value);
++
++/* TODO(pennyos): real implementation */
++unsigned short pmic_get_register_value(PMU_FLAGS_LIST_ENUM flagname)
++{
++	SHIM_STUB_CALLED("flagname=%d (%s)",
++			 flagname, shim_pmu_flag_name(flagname));
++	return 0;
++}
++EXPORT_SYMBOL(pmic_get_register_value);
++
++void upmu_set_reg_value(unsigned int reg, unsigned int reg_val)
++{
++	shim_pmic_update(reg, 0xffff, reg_val);
++}
++EXPORT_SYMBOL(upmu_set_reg_value);
++
++/* ------------------------------------------------------------------------
++ * clock buffer
++ * ------------------------------------------------------------------------ */
++
++/* TODO(pennyos): real implementation */
++bool clk_buf_ctrl(enum clk_buf_id id, bool onoff)
++{
++	SHIM_STUB_CALLED("id=%d, onoff=%d", id, onoff);
++	return 0;	/* vendor: 0 = done, non-zero = refused */
++}
++EXPORT_SYMBOL(clk_buf_ctrl);
++
++/* TODO(pennyos): real implementation */
++bool is_clk_buf_from_pmic(void)
++{
++	SHIM_STUB_CALLED("");
++	return true;	/* MT6771 + MT6358: the clock buffer is in the PMIC */
++}
++EXPORT_SYMBOL(is_clk_buf_from_pmic);
++
++/* ------------------------------------------------------------------------
++ * EMI MPU
++ * ------------------------------------------------------------------------ */
++
++/* TODO(pennyos): real implementation */
++int emi_mpu_set_protection(struct emi_region_info_t *region_info)
++{
++	if (region_info)
++		SHIM_STUB_CALLED("start=0x%llx, end=0x%llx, region=%u, apc[0]=0x%x, apc[1]=0x%x",
++				 region_info->start, region_info->end,
++				 region_info->region, region_info->apc[0],
++				 region_info->apc[1]);
++	else
++		SHIM_STUB_CALLED("region_info=NULL");
++	return 0;
++}
++EXPORT_SYMBOL(emi_mpu_set_protection);
++
++/* ------------------------------------------------------------------------
++ * RTC 32k output
++ * ------------------------------------------------------------------------ */
++
++/* TODO(pennyos): real implementation */
++void rtc_gpio_enable_32k(enum rtc_gpio_user_t user)
++{
++	SHIM_STUB_CALLED("user=%d", user);
++}
++EXPORT_SYMBOL(rtc_gpio_enable_32k);
++
++/* ------------------------------------------------------------------------
++ * conn_md (modem coexistence bridge)
++ * ------------------------------------------------------------------------ */
++
++/* TODO(pennyos): real implementation */
++int mtk_conn_md_bridge_reg(uint32 u_id, struct conn_md_bridge_ops *p_ops)
++{
++	SHIM_STUB_CALLED("u_id=0x%x, p_ops=%p", u_id, p_ops);
++	return CONN_MD_ERR_NO_ERR;
++}
++EXPORT_SYMBOL(mtk_conn_md_bridge_reg);
++
++/* TODO(pennyos): real implementation */
++int mtk_conn_md_bridge_unreg(uint32 u_id)
++{
++	SHIM_STUB_CALLED("u_id=0x%x", u_id);
++	return CONN_MD_ERR_NO_ERR;
++}
++EXPORT_SYMBOL(mtk_conn_md_bridge_unreg);
++
++/* TODO(pennyos): real implementation */
++int mtk_conn_md_bridge_send_msg(struct ipc_ilm *ilm)
++{
++	if (ilm)
++		SHIM_STUB_CALLED("src_mod_id=0x%x, dest_mod_id=0x%x, sap_id=0x%x, msg_id=0x%x, local_para_ptr=%p",
++				 ilm->src_mod_id, ilm->dest_mod_id, ilm->sap_id,
++				 ilm->msg_id, ilm->local_para_ptr);
++	else
++		SHIM_STUB_CALLED("ilm=NULL");
++	return CONN_MD_ERR_NO_ERR;
++}
++EXPORT_SYMBOL(mtk_conn_md_bridge_send_msg);
++
++/* ------------------------------------------------------------------------
++ * SPM / sleep
++ * ------------------------------------------------------------------------ */
++
++/* TODO(pennyos): real implementation */
++unsigned int slp_get_wake_reason(void)
++{
++	SHIM_STUB_CALLED("");
++	return 0;	/* WR_NONE */
++}
++EXPORT_SYMBOL(slp_get_wake_reason);
++
++/* TODO(pennyos): real implementation */
++u32 spm_get_last_wakeup_src(void)
++{
++	SHIM_STUB_CALLED("");
++	return 0;	/* no wakeup source bits */
++}
++EXPORT_SYMBOL(spm_get_last_wakeup_src);
++
++/* ------------------------------------------------------------------------
++ * GIC / GPIO debug dumps
++ * ------------------------------------------------------------------------ */
++
++/* TODO(pennyos): real implementation */
++void mt_irq_dump_status(int irq)
++{
++	SHIM_STUB_CALLED("irq=%d", irq);
++}
++EXPORT_SYMBOL(mt_irq_dump_status);
++
++/* TODO(pennyos): real implementation */
++void gpio_dump_regs_range(int start, int end)
++{
++	SHIM_STUB_CALLED("start=%d, end=%d", start, end);
++}
++EXPORT_SYMBOL(gpio_dump_regs_range);
++
++/* ------------------------------------------------------------------------
++ * PPM CPU frequency user limits (Wi-Fi throughput boost)
++ * ------------------------------------------------------------------------ */
++
++/* TODO(pennyos): real implementation (cpufreq QoS min-frequency request) */
++int update_userlimit_cpu_freq(int kicker, int num_cluster,
++			      struct ppm_limit_data *freq_limit)
++{
++	SHIM_STUB_CALLED("kicker=%d, num_cluster=%d, [0].min=%d, [0].max=%d",
++			 kicker, num_cluster,
++			 freq_limit ? freq_limit[0].min : 0,
++			 freq_limit ? freq_limit[0].max : 0);
++	return 0;
++}
++EXPORT_SYMBOL(update_userlimit_cpu_freq);
++
++/* ------------------------------------------------------------------------
++ * vendor pm_qos class PM_QOS_EMI_OPP (DVFSRC DDR OPP floor)
++ * ------------------------------------------------------------------------ */
++
++/* TODO(pennyos): real implementation */
++void pm_qos_add_request(struct pm_qos_request *req, int pm_qos_class, s32 value)
++{
++	SHIM_STUB_CALLED("req=%p, pm_qos_class=%d, value=%d", req, pm_qos_class, value);
++}
++EXPORT_SYMBOL(pm_qos_add_request);
++
++/* TODO(pennyos): real implementation */
++void pm_qos_update_request(struct pm_qos_request *req, s32 new_value)
++{
++	SHIM_STUB_CALLED("req=%p, new_value=%d", req, new_value);
++}
++EXPORT_SYMBOL(pm_qos_update_request);
++
++/* TODO(pennyos): real implementation */
++void pm_qos_remove_request(struct pm_qos_request *req)
++{
++	SHIM_STUB_CALLED("req=%p", req);
++}
++EXPORT_SYMBOL(pm_qos_remove_request);
++
++/* ------------------------------------------------------------------------
++ * kernel-internal functions not exported to modules
++ * ------------------------------------------------------------------------ */
++
++/* TODO(pennyos): real implementation */
++void pennyos_shim_tracing_record_cmdline(struct task_struct *tsk)
++{
++	SHIM_STUB_CALLED("tsk=%p", tsk);
++}
++EXPORT_SYMBOL(pennyos_shim_tracing_record_cmdline);
++
++/* TODO(pennyos): real implementation */
++int pennyos_shim_mmc_io_rw_direct(struct mmc_card *card, int write,
++				    unsigned int fn, unsigned int addr,
++				    u8 in, u8 *out)
++{
++	SHIM_STUB_CALLED("card=%p, write=%d, fn=%u, addr=0x%x, in=0x%x, out=%p",
++			 card, write, fn, addr, in, out);
++	if (out)
++		*out = 0;
++	return 0;
++}
++EXPORT_SYMBOL(pennyos_shim_mmc_io_rw_direct);
++
++MODULE_DESCRIPTION("pennyos: stubs for MediaTek vendor-kernel services used by the connectivity drivers");
++MODULE_LICENSE("GPL");
+diff --git a/compat/pennyos_shim.h b/compat/pennyos_shim.h
+new file mode 100644
+index 0000000..774b741
+--- /dev/null
++++ b/compat/pennyos_shim.h
+@@ -0,0 +1,302 @@
++/* SPDX-License-Identifier: GPL-2.0 */
++/*
++ * pennyos_shim.h - declarations for services that only exist in the
++ * MediaTek vendor (Android 4.4) kernel and have no mainline counterpart.
++ *
++ * Every function declared here is implemented as a logging stub in
++ * pennyos_shim.c (module pennyos_shim.ko).  The constants, enums and
++ * structs are copied from the vendor headers named in each section so that
++ * the callers compile unchanged and a later real implementation gets the
++ * same values the vendor kernel used.
++ *
++ * The vendor header names the drivers #include (aee.h, upmu_common.h,
++ * mtk_clkbuf_ctl.h, mt_emi_api.h, conn_md_exp.h, ...) are small forwarding
++ * headers in compat/include/ that all include this file.
++ */
++#ifndef _PENNYOS_SHIM_H_
++#define _PENNYOS_SHIM_H_
++
++#include <linux/types.h>
++#include <linux/compiler.h>
++
++struct task_struct;
++struct mmc_card;
++
++/* ------------------------------------------------------------------------
++ * AEE / AED ("Android Exception Engine") crash and warning reporting
++ * vendor: drivers/misc/mediatek/include/mt-plat/aee.h
++ * ------------------------------------------------------------------------ */
++#define DB_OPT_DEFAULT			(0)
++#define DB_OPT_FTRACE			(1<<0)
++#define DB_OPT_WCN_ISSUE_INFO		(1<<19)
++
++void aee_kernel_warning_api(const char *file, const int line, const int db_opt,
++			    const char *module, const char *msg, ...);
++void aee_kernel_dal_api(const char *file, const int line, const char *msg);
++void aed_combo_exception_api(const int *log, int log_size, const int *phy,
++			     int phy_size, const char *detail, const int db_opt);
++
++#define aee_kernel_warning(module, msg...)	\
++	aee_kernel_warning_api(__FILE__, __LINE__, DB_OPT_DEFAULT, module, msg)
++#define aee_kernel_dal_show(msg)	\
++	aee_kernel_dal_api(__FILE__, __LINE__, msg)
++#define aed_combo_exception(log, log_size, phy, phy_size, detail)	\
++	aed_combo_exception_api(log, log_size, phy, phy_size, detail, DB_OPT_DEFAULT)
++
++/* ------------------------------------------------------------------------
++ * PMIC (MT6358) raw register access
++ * vendor: include/mt-plat/upmu_common.h,
++ *         include/mt-plat/mt6771/include/mach/upmu_hw.h
++ * ------------------------------------------------------------------------ */
++/* register addresses (MT6358_PMIC_REG_BASE is 0) */
++#define MT6358_LDO_VCN18_OP_EN		((unsigned int)0x1c5a)
++#define MT6358_LDO_VCN33_OP_EN		((unsigned int)0x1d1e)
++#define MT6358_LDO_VCN28_OP_EN		((unsigned int)0x1d8a)
++#define MT6358_LDO_VCN28_OP_CFG		((unsigned int)0x1d90)
++
++/*
++ * The vendor PMU_FLAGS_LIST_ENUM is a ~2700 entry auto-numbered list of
++ * register bit fields.  Only the fields the MT6771 consys code touches are
++ * kept; the numeric values are private to the shim (not the vendor's).
++ *
++ *   field                          register                  mask  shift
++ *   PMIC_RG_LDO_VCN28_HW0_OP_EN    MT6358_LDO_VCN28_OP_EN    0x1   1
++ *   PMIC_RG_LDO_VCN28_HW0_OP_CFG   MT6358_LDO_VCN28_OP_CFG   0x1   1
++ */
++typedef enum {
++	PMIC_RG_LDO_VCN28_HW0_OP_EN = 1,
++	PMIC_RG_LDO_VCN28_HW0_OP_CFG,
++	PMU_COMMAND_MAX
++} PMU_FLAGS_LIST_ENUM;
++
++unsigned int pmic_read_interface(unsigned int RegNum, unsigned int *val,
++				 unsigned int MASK, unsigned int SHIFT);
++unsigned int pmic_config_interface(unsigned int RegNum, unsigned int val,
++				   unsigned int MASK, unsigned int SHIFT);
++unsigned short pmic_set_register_value(PMU_FLAGS_LIST_ENUM flagname,
++				       unsigned int val);
++unsigned short pmic_get_register_value(PMU_FLAGS_LIST_ENUM flagname);
++void upmu_set_reg_value(unsigned int reg, unsigned int reg_val);
++
++/* ------------------------------------------------------------------------
++ * 26 MHz clock buffer control (XO_WCN output of the PMIC / RF clock buffer)
++ * vendor: base/power/include/clkbuf_v1/mtk_clkbuf_ctl.h,
++ *         base/power/include/clkbuf_v1/mt6771/mtk_clkbuf_hw.h
++ * ------------------------------------------------------------------------ */
++enum clk_buf_id {
++	CLK_BUF_BB_MD		= 0,
++	CLK_BUF_CONN,
++	CLK_BUF_NFC,
++	CLK_BUF_RF,
++	CLK_BUF_AUDIO,
++	CLK_BUF_CHG,
++	CLK_BUF_UFS,
++	CLK_BUF_INVALID
++};
++
++bool clk_buf_ctrl(enum clk_buf_id id, bool onoff);
++bool is_clk_buf_from_pmic(void);
++
++/* ------------------------------------------------------------------------
++ * EMI MPU (memory protection for the region shared with the consys MCU)
++ * vendor: drivers/misc/mediatek/emi/mt6771/mt_emi_api.h,
++ *         drivers/misc/mediatek/emi/submodule/mpu_v1.h
++ * ------------------------------------------------------------------------ */
++#define EMI_MPU_DOMAIN_NUM	16
++#define EMI_MPU_REGION_NUM	32
++#define EMI_MPU_ALIGN_BITS	16
++
++#define NO_PROTECTION	0
++#define SEC_RW		1
++#define SEC_RW_NSEC_R	2
++#define SEC_RW_NSEC_W	3
++#define SEC_R_NSEC_R	4
++#define FORBIDDEN	5
++#define SEC_R_NSEC_RW	6
++
++#define UNLOCK		0
++#define LOCK		1
++
++#define EMI_MPU_DGROUP_NUM	(EMI_MPU_DOMAIN_NUM / 8)
++#define SET_ACCESS_PERMISSION(apc_ary, lock, \
++	d15, d14, d13, d12, d11, d10, d9, d8, d7, d6, d5, d4, d3, d2, d1, d0) \
++do { \
++	apc_ary[1] = \
++		(((unsigned int) d15) << 21) | (((unsigned int) d14) << 18) | \
++		(((unsigned int) d13) << 15) | (((unsigned int) d12) << 12) | \
++		(((unsigned int) d11) << 9) | (((unsigned int) d10) << 6) | \
++		(((unsigned int) d9) << 3) | ((unsigned int) d8); \
++	apc_ary[0] = \
++		(((unsigned int) d7) << 21) | (((unsigned int) d6) << 18) | \
++		(((unsigned int) d5) << 15) | (((unsigned int) d4) << 12) | \
++		(((unsigned int) d3) << 9) | (((unsigned int) d2) << 6) | \
++		(((unsigned int) d1) << 3) | ((unsigned int) d0) | \
++		((unsigned int) lock << 31); \
++} while (0)
++
++struct emi_region_info_t {
++	unsigned long long start;
++	unsigned long long end;
++	unsigned int region;
++	unsigned int apc[EMI_MPU_DGROUP_NUM];
++};
++
++int emi_mpu_set_protection(struct emi_region_info_t *region_info);
++
++/* ------------------------------------------------------------------------
++ * RTC 32 kHz clock output gate (PMIC RTC "RTC_GPIO" 32K export)
++ * vendor: include/mt-plat/mtk_rtc.h
++ * ------------------------------------------------------------------------ */
++enum rtc_gpio_user_t {
++	RTC_GPIO_USER_WIFI = 8,
++	RTC_GPIO_USER_GPS = 9,
++	RTC_GPIO_USER_BT = 10,
++	RTC_GPIO_USER_FM = 11,
++	RTC_GPIO_USER_PMIC = 12,
++};
++
++void rtc_gpio_enable_32k(enum rtc_gpio_user_t user);
++
++/* ------------------------------------------------------------------------
++ * conn_md: connectivity <-> modem (LTE coexistence / IDC) message bridge,
++ * carried over the ECCCI modem IPC
++ * vendor: drivers/misc/mediatek/conn_md/include/conn_md_exp.h,
++ *         drivers/misc/mediatek/eccci/port_ipc.h, ccci_ipc_task_ID.h
++ * ------------------------------------------------------------------------ */
++#define uint32 unsigned int
++#define uint8 unsigned char
++#define uint16 unsigned short
++
++enum CCCI_IPC_MSG_ID_RANGE {
++	IPC_L4C_MSG_ID_BEGIN = 0x80000000,
++	IPC_L4C_MSG_ID_RANGE = 0x80,
++	IPC_EL1_MSG_ID_BEGIN = IPC_L4C_MSG_ID_BEGIN + IPC_L4C_MSG_ID_RANGE,
++	IPC_EL1_MSG_ID_RANGE = 0x20,
++};
++
++struct local_para {
++	u8 ref_count;
++	u8 _stub; /* MD complier will align ref_count to 16bit */
++	u16 msg_len;
++	u8 data[0];
++} __packed;
++
++struct peer_buff {
++	u16 pdu_len;
++	u8 ref_count;
++	u8 pb_resvered;
++	u16 free_header_space;
++	u16 free_tail_space;
++	u8 data[0];
++} __packed;
++
++struct ipc_ilm {
++	u32 src_mod_id;
++	u32 dest_mod_id;
++	u32 sap_id;
++	u32 msg_id;
++	struct local_para *local_para_ptr;
++	struct peer_buff *peer_buff_ptr;
++};
++
++#define AP_UNIFY_ID_FLAG	(1<<31)
++#define MD_UNIFY_ID_FLAG	(0<<31)
++#define MD_MOD_EL1		5
++#define AP_IPC_WMT		3
++#define AP_MOD_WMT		(AP_IPC_WMT | AP_UNIFY_ID_FLAG)
++
++typedef struct ipc_ilm conn_md_ipc_ilm_t;
++
++enum CONN_MD_ERR_CODE {
++	CONN_MD_ERR_NO_ERR = 0,
++	CONN_MD_ERR_DEF_ERR = -1,
++	CONN_MD_ERR_INVALID_PARAM = -2,
++	CONN_MD_ERR_OTHERS = -4,
++};
++
++typedef int (*conn_md_msg_rx_cb) (struct ipc_ilm *ilm);
++
++struct conn_md_bridge_ops {
++	conn_md_msg_rx_cb rx_cb;
++};
++
++int mtk_conn_md_bridge_reg(uint32 u_id, struct conn_md_bridge_ops *p_ops);
++int mtk_conn_md_bridge_unreg(uint32 u_id);
++int mtk_conn_md_bridge_send_msg(struct ipc_ilm *ilm);
++
++/* ------------------------------------------------------------------------
++ * SPM / sleep: why did the AP wake up
++ * vendor: base/power/include/spm_v4/mtk_sleep.h, mtk_spm_sleep.h
++ * ------------------------------------------------------------------------ */
++unsigned int slp_get_wake_reason(void);
++u32 spm_get_last_wakeup_src(void);
++
++/* ------------------------------------------------------------------------
++ * MediaTek GIC extension: dump the state of one interrupt
++ * vendor: include/linux/irqchip/mtk-gic-extend.h
++ * ------------------------------------------------------------------------ */
++void mt_irq_dump_status(int irq);
++
++/* ------------------------------------------------------------------------
++ * MediaTek pinctrl debug: dump GPIO mode/dir/pull registers for a pin range
++ * vendor: drivers/pinctrl/mediatek (gpio_dump_regs_range)
++ * ------------------------------------------------------------------------ */
++void gpio_dump_regs_range(int start, int end);
++
++/* ------------------------------------------------------------------------
++ * PPM ("performance and power manager") CPU frequency user limits, used by
++ * the Wi-Fi driver's throughput-triggered CPU boost (kalBoostCpu).
++ * vendor: include/mt-plat/legacy_controller.h,
++ *         include/mt-plat/mt6771/include/mach/mtk_ppm_api.h
++ * ------------------------------------------------------------------------ */
++#define PENNYOS_SHIM_PPM		1
++
++#define PPM_KIR_PERF			0
++#define PPM_KIR_FBC			1
++#define PPM_KIR_WIFI			2
++#define PPM_KIR_BOOT			3
++#define PPM_KIR_TOUCH			4
++#define PPM_MAX_KIR			5
++
++struct ppm_limit_data {
++	int min;
++	int max;
++};
++
++int update_userlimit_cpu_freq(int kicker, int num_cluster,
++			      struct ppm_limit_data *freq_limit);
++
++/* ------------------------------------------------------------------------
++ * DVFSRC DDR OPP requests through the vendor pm_qos class PM_QOS_EMI_OPP.
++ * Mainline removed the class based pm_qos_*_request() API in 5.7 and never
++ * had this class.
++ * vendor: include/linux/pm_qos.h, drivers/devfreq/helio-dvfsrc-opp-mt6771.h
++ * ------------------------------------------------------------------------ */
++#define PM_QOS_EMI_OPP			9	/* vendor enum value */
++
++enum ddr_opp {
++	DDR_OPP_0 = 0,			/* 3200 MHz */
++	DDR_OPP_1,			/* 2400 MHz */
++	DDR_OPP_2,			/* 1600 MHz */
++	DDR_OPP_NUM,
++	DDR_OPP_UNREQ = 15,
++};
++
++struct pm_qos_request;
++void pm_qos_add_request(struct pm_qos_request *req, int pm_qos_class, s32 value);
++void pm_qos_update_request(struct pm_qos_request *req, s32 new_value);
++void pm_qos_remove_request(struct pm_qos_request *req);
++
++/* ------------------------------------------------------------------------
++ * Kernel-internal functions the vendor's *built-in* "connadp" glue called
++ * directly.  Mainline has them but does not export them to modules, so the
++ * module build cannot reach them.
++ * ------------------------------------------------------------------------ */
++/* kernel/trace/trace.c: tracing_record_cmdline() */
++void pennyos_shim_tracing_record_cmdline(struct task_struct *tsk);
++/* drivers/mmc/core/sdio_ops.c: mmc_io_rw_direct() */
++int pennyos_shim_mmc_io_rw_direct(struct mmc_card *card, int write,
++				    unsigned int fn, unsigned int addr,
++				    u8 in, u8 *out);
++
++#endif /* _PENNYOS_SHIM_H_ */
+diff --git a/connectivity/Kbuild b/connectivity/Kbuild
+new file mode 100644
+index 0000000..a6dd072
+--- /dev/null
++++ b/connectivity/Kbuild
+@@ -0,0 +1,9 @@
++# SPDX-License-Identifier: GPL-2.0
++# pennyos replacement for connectivity/Makefile.
++# gps/ and fmradio/ are not built here.  The vendor's built-in
++# "connadp" glue (common/connectivity_build_in_adapter.o and
++# common/wmt_build_in_adapter.o) is folded into wmt_drv, see common/Kbuild.
++obj-m += common/
++obj-m += bt/mt66xx/
++obj-m += wlan/adaptor/
++obj-m += wlan/core/gen3/
+diff --git a/connectivity/bt/mt66xx/Kbuild b/connectivity/bt/mt66xx/Kbuild
+new file mode 100644
+index 0000000..ca2ef36
+--- /dev/null
++++ b/connectivity/bt/mt66xx/Kbuild
+@@ -0,0 +1,17 @@
++# SPDX-License-Identifier: GPL-2.0
++# pennyos replacement for connectivity/bt/mt66xx/Makefile (obj-y -> obj-m).
++ccflags-y += -D MTK_WCN_WMT_STP_EXP_SYMBOL_ABSTRACT
++# CONFIG_MTK_CONN_LTE_IDC_SUPPORT=y
++ccflags-y += -D WMT_IDC_SUPPORT=1
++
++WMT_SRC_FOLDER := $(PENNYOS_ROOT)/connectivity/common
++ccflags-y += -I$(WMT_SRC_FOLDER)/common_main/include
++ccflags-y += -I$(WMT_SRC_FOLDER)/common_main/linux/include
++
++MODULE_NAME := bt_drv
++obj-m += $(MODULE_NAME).o
++
++ccflags-y += -D CREATE_NODE_DYNAMIC=1
++
++$(MODULE_NAME)-objs += stp_chrdev_bt.o
++# CONFIG_MTK_CONNSYS_DEDICATED_LOG_PATH unset: no fw_log_bt.o
+diff --git a/connectivity/bt/mt66xx/stp_chrdev_bt.c b/connectivity/bt/mt66xx/stp_chrdev_bt.c
+index c18053f..52ef689 100644
+--- a/connectivity/bt/mt66xx/stp_chrdev_bt.c
++++ b/connectivity/bt/mt66xx/stp_chrdev_bt.c
+@@ -605,7 +605,7 @@ static int BT_init(void)
+ 		goto error;
+ 
+ #if CREATE_NODE_DYNAMIC /* mknod replace */
+-	stpbt_class = class_create(THIS_MODULE, "stpbt");
++	stpbt_class = class_create("stpbt");
+ 	if (IS_ERR(stpbt_class))
+ 		goto error;
+ 	stpbt_dev = device_create(stpbt_class, NULL, dev, NULL, "stpbt");
+diff --git a/connectivity/common/Kbuild b/connectivity/common/Kbuild
+new file mode 100644
+index 0000000..83df206
+--- /dev/null
++++ b/connectivity/common/Kbuild
+@@ -0,0 +1,113 @@
++# SPDX-License-Identifier: GPL-2.0
++# pennyos replacement for connectivity/common/Makefile, evaluated for
++#   CONFIG_MTK_COMBO_CHIP="CONSYS_6771", CONFIG_MTK_PLATFORM="mt6771",
++#   CONFIG_ARM64=y, CONFIG_MTK_BTIF=y, CONFIG_MTK_CONN_LTE_IDC_SUPPORT=y,
++#   CONFIG_MTK_CONNSYS_DEDICATED_LOG_PATH unset, CONFIG_EXTREME_LOW_RAM unset,
++#   TARGET_BUILD_VARIANT unset (i.e. neither "user" nor "eng").
++# Object list and -D flags are in the same order as the vendor Makefile.
++
++MTK_PLATFORM := mt6771
++
++ccflags-y += -D CONFIG_MTK_WCN_ARM64
++ccflags-y += -D WMT_IDC_SUPPORT=1
++ccflags-y += -D MTK_WCN_WMT_STP_EXP_SYMBOL_ABSTRACT
++
++ccflags-y += -I$(PENNYOS_ROOT)/btif/common/inc
++ccflags-y += -I$(src)
++
++MODULE_NAME := wmt_drv
++obj-m += $(MODULE_NAME).o
++
++###############################################################################
++# vendor "connadp" (built-in in the vendor kernel), folded into the module
++###############################################################################
++$(MODULE_NAME)-objs += connectivity_build_in_adapter.o
++$(MODULE_NAME)-objs += wmt_build_in_adapter.o
++
++###############################################################################
++# common_detect
++###############################################################################
++ccflags-y += -DWMT_PLAT_ALPS=1
++ccflags-y += -D MTK_WCN_SOC_CHIP_SUPPORT
++
++ccflags-y += -I$(src)/common_main/linux/include
++ccflags-y += -I$(src)/common_detect/drv_init/inc
++ccflags-y += -I$(src)/common_detect
++ccflags-y += -I$(src)/debug_utility
++
++$(MODULE_NAME)-objs += common_detect/wmt_detect_pwr.o
++$(MODULE_NAME)-objs += common_detect/wmt_detect.o
++$(MODULE_NAME)-objs += common_detect/sdio_detect.o
++$(MODULE_NAME)-objs += common_detect/mtk_wcn_stub_alps.o
++$(MODULE_NAME)-objs += common_detect/wmt_gpio.o
++
++ccflags-y += -D MTK_WCN_WLAN_GEN3
++
++$(MODULE_NAME)-objs += common_detect/drv_init/fm_drv_init.o
++$(MODULE_NAME)-objs += common_detect/drv_init/conn_drv_init.o
++$(MODULE_NAME)-objs += common_detect/drv_init/bluetooth_drv_init.o
++$(MODULE_NAME)-objs += common_detect/drv_init/wlan_drv_init.o
++$(MODULE_NAME)-objs += common_detect/drv_init/common_drv_init.o
++$(MODULE_NAME)-objs += common_detect/drv_init/gps_drv_init.o
++
++###############################################################################
++# common_main
++###############################################################################
++ccflags-y += -I$(src)/common_main/linux/include
++ccflags-y += -I$(src)/common_main/linux/pri/include
++ccflags-y += -I$(src)/common_main/platform/include
++ccflags-y += -I$(src)/common_main/core/include
++ccflags-y += -I$(src)/common_main/include
++
++ccflags-y += -D WMT_PLAT_ALPS=1
++ccflags-y += -D WMT_UART_RX_MODE_WORK=0 # 1. work thread 0. tasklet
++ccflags-y += -D WMT_SDIO_MODE=1
++ccflags-y += -D WMT_CREATE_NODE_DYNAMIC=1
++
++# TARGET_BUILD_VARIANT != user
++ccflags-y += -D WMT_DBG_SUPPORT=1
++# no aee_config_internal in a kernel-only build
++ccflags-y += -D CFG_WMT_STEP
++
++$(MODULE_NAME)-objs += common_main/platform/$(MTK_PLATFORM).o
++
++$(MODULE_NAME)-objs += common_main/platform/wmt_plat_alps.o
++$(MODULE_NAME)-objs += common_main/platform/mtk_wcn_consys_hw.o
++$(MODULE_NAME)-objs += common_main/platform/mtk_wcn_cmb_hw.o
++
++$(MODULE_NAME)-objs += common_main/core/wmt_ic_6628.o
++$(MODULE_NAME)-objs += common_main/core/wmt_conf.o
++$(MODULE_NAME)-objs += common_main/core/stp_core.o
++$(MODULE_NAME)-objs += common_main/core/wmt_ctrl.o
++$(MODULE_NAME)-objs += common_main/core/wmt_func.o
++$(MODULE_NAME)-objs += common_main/core/wmt_core.o
++$(MODULE_NAME)-objs += common_main/core/psm_core.o
++$(MODULE_NAME)-objs += common_main/core/wmt_ic_soc.o
++$(MODULE_NAME)-objs += common_main/core/wmt_lib.o
++$(MODULE_NAME)-objs += common_main/core/wmt_ic_6620.o
++$(MODULE_NAME)-objs += common_main/core/stp_exp.o
++$(MODULE_NAME)-objs += common_main/core/wmt_ic_6632.o
++$(MODULE_NAME)-objs += common_main/core/wmt_exp.o
++$(MODULE_NAME)-objs += common_main/core/btm_core.o
++$(MODULE_NAME)-objs += common_main/core/wmt_ic_6630.o
++
++$(MODULE_NAME)-objs += common_main/linux/hif_sdio.o
++$(MODULE_NAME)-objs += common_main/linux/stp_dbg_soc.o
++$(MODULE_NAME)-objs += common_main/linux/stp_dbg_combo.o
++$(MODULE_NAME)-objs += common_main/linux/osal.o
++$(MODULE_NAME)-objs += common_main/linux/wmt_dev.o
++$(MODULE_NAME)-objs += common_main/linux/stp_sdio.o
++$(MODULE_NAME)-objs += common_main/linux/bgw_desense.o
++$(MODULE_NAME)-objs += common_main/linux/wmt_idc.o
++$(MODULE_NAME)-objs += common_main/linux/stp_uart.o
++$(MODULE_NAME)-objs += common_main/linux/wmt_dbg.o
++$(MODULE_NAME)-objs += common_main/linux/stp_dbg.o
++# CONFIG_MTK_CONNSYS_DEDICATED_LOG_PATH unset: no fw_log_wmt.o
++$(MODULE_NAME)-objs += common_main/linux/wmt_step.o
++
++# CONFIG_MTK_BTIF=y
++$(MODULE_NAME)-objs += common_main/linux/stp_btif.o
++
++$(MODULE_NAME)-objs += debug_utility/ring.o
++$(MODULE_NAME)-objs += debug_utility/ring_emi.o
++$(MODULE_NAME)-objs += debug_utility/connsys_debug_utility.o
+diff --git a/connectivity/common/common_detect/wmt_detect.c b/connectivity/common/common_detect/wmt_detect.c
+index 393eb94..1e86ea3 100644
+--- a/connectivity/common/common_detect/wmt_detect.c
++++ b/connectivity/common/common_detect/wmt_detect.c
+@@ -23,6 +23,7 @@
+ #include "wmt_detect.h"
+ #include "wmt_gpio.h"
+ #include "wmt_dev.h"
++#include <connectivity_build_in_adapter.h>	/* pennyos: reserved-memory lookup */
+ 
+ #if MTK_WCN_REMOVE_KO
+ #include "conn_drv_init.h"
+@@ -298,6 +299,11 @@ static int wmt_detect_driver_init(void)
+ 	int cdevErr = -1;
+ 	int ret = -1;
+ 
++#ifdef MODULE
++	/* pennyos: replaces the early-boot RESERVEDMEM_OF_DECLARE() scan */
++	connectivity_export_reserve_memory_consys_lookup();
++#endif
++
+ 	/*init SDIO-DETECT module */
+ 	sdio_detect_init();
+ 
+@@ -322,7 +328,7 @@ static int wmt_detect_driver_init(void)
+ 		goto err1;
+ 	}
+ 
+-	pDetectClass = class_create(THIS_MODULE, WMT_DETECT_DEVICE_NAME);
++	pDetectClass = class_create(WMT_DETECT_DEVICE_NAME);
+ 	if (IS_ERR(pDetectClass)) {
+ 		WMT_DETECT_PR_ERR("class create fail, error code(%ld)\n", PTR_ERR(pDetectClass));
+ 		goto err1;
+diff --git a/connectivity/common/common_main/linux/osal.c b/connectivity/common/common_main/linux/osal.c
+index dadc93a..1bb9eb5 100644
+--- a/connectivity/common/common_main/linux/osal.c
++++ b/connectivity/common/common_main/linux/osal.c
+@@ -786,13 +786,21 @@ INT32 osal_test_and_set_bit(UINT32 bitOffset, P_OSAL_BIT_OP_VAR pData)
+   *
+ */
+ 
++/* pennyos: timer callbacks take the timer_list since 4.15; forward to the
++ * vendor handler with the data word stored in the OSAL_TIMER.
++ */
++static void osal_timer_timeout(struct timer_list *t)
++{
++	P_OSAL_TIMER pTimer = from_timer(pTimer, t, timer);
++
++	pTimer->timeoutHandler(pTimer->timeroutHandlerData);
++}
++
+ INT32 osal_timer_create(P_OSAL_TIMER pTimer)
+ {
+ 	struct timer_list *timer = &pTimer->timer;
+ 
+-	init_timer(timer);
+-	timer->function = pTimer->timeoutHandler;
+-	timer->data = (ULONG)pTimer->timeroutHandlerData;
++	timer_setup(timer, osal_timer_timeout, 0);
+ 	return 0;
+ }
+ 
+diff --git a/connectivity/common/common_main/linux/stp_sdio.c b/connectivity/common/common_main/linux/stp_sdio.c
+index 3b2e0a5..0513119 100644
+--- a/connectivity/common/common_main/linux/stp_sdio.c
++++ b/connectivity/common/common_main/linux/stp_sdio.c
+@@ -184,9 +184,9 @@ static struct timeval old = {0};
+ static ssize_t stp_sdio_rxdbg_read(struct file *filp, char __user *buf, size_t count, loff_t *f_pos);
+ static ssize_t stp_sdio_rxdbg_write(struct file *filp, const char __user *buf, size_t count,
+ 			     loff_t *f_pos);
+-static const struct file_operations stp_sdio_rxdbg_fops = {
+-	.read = stp_sdio_rxdbg_read,
+-	.write = stp_sdio_rxdbg_write,
++static const struct proc_ops stp_sdio_rxdbg_fops = {
++	.proc_read = stp_sdio_rxdbg_read,
++	.proc_write = stp_sdio_rxdbg_write,
+ };
+ 
+ #endif
+@@ -197,9 +197,9 @@ static struct proc_dir_entry *gStpSdioOwnEntry;
+ static ssize_t stp_sdio_own_read(struct file *filp, char __user *buf, size_t count, loff_t *f_pos);
+ static ssize_t stp_sdio_own_write(struct file *filp, const char __user *buf, size_t count,
+ 			   loff_t *f_pos);
+-static const struct file_operations stp_sdio_own_fops = {
+-	.read = stp_sdio_own_read,
+-	.write = stp_sdio_own_write,
++static const struct proc_ops stp_sdio_own_fops = {
++	.proc_read = stp_sdio_own_read,
++	.proc_write = stp_sdio_own_write,
+ };
+ 
+ #endif
+@@ -211,9 +211,9 @@ static struct proc_dir_entry *gStpSdioTxDbgEntry;
+ static ssize_t stp_sdio_txdbg_read(struct file *filp, char __user *buf, size_t count, loff_t *f_pos);
+ static ssize_t stp_sdio_txdbg_write(struct file *filp, const char __user *buf, size_t count,
+ 			     loff_t *f_pos);
+-static const struct file_operations stp_sdio_txdbg_fops = {
+-	.read = stp_sdio_txdbg_read,
+-	.write = stp_sdio_txdbg_write,
++static const struct proc_ops stp_sdio_txdbg_fops = {
++	.proc_read = stp_sdio_txdbg_read,
++	.proc_write = stp_sdio_txdbg_write,
+ };
+ 
+ #if STP_SDIO_TXDBG
+diff --git a/connectivity/common/common_main/linux/stp_uart.c b/connectivity/common/common_main/linux/stp_uart.c
+index 41a0b1a..084bbf6 100644
+--- a/connectivity/common/common_main/linux/stp_uart.c
++++ b/connectivity/common/common_main/linux/stp_uart.c
+@@ -204,7 +204,7 @@ static INT32 stp_uart_tty_open(struct tty_struct *tty)
+ 	UART_PR_DBG("stp_uart_tty_opentty: %p\n", tty);
+ 
+ 	tty->receive_room = 65536;
+-	tty->port->low_latency = 1;
++	/* pennyos: tty_port.low_latency was removed in 5.12 (always low latency) */
+ 
+ 	/* Flush any pending characters in the driver and line discipline. */
+ 
+@@ -339,7 +339,7 @@ static VOID stp_uart_rx_handling(ULONG func_data)
+ 		UART_PR_INFO("finish, fifolen(%d)\n", kfifo_len(g_stp_uart_rx_fifo));
+ }
+ 
+-static VOID stp_uart_tty_receive(struct tty_struct *tty, const unsigned char *data, PINT8 flags, INT32 count)
++static VOID stp_uart_tty_receive(struct tty_struct *tty, const unsigned char *data, const char *flags, INT32 count)
+ {
+ 	UINT32 fifo_avail_len = LDISC_RX_FIFO_SIZE - kfifo_len(g_stp_uart_rx_fifo);
+ 	UINT32 how_much_put = 0;
+@@ -487,7 +487,7 @@ static VOID stp_uart_rx_worker(struct work_struct *work)
+  *
+  * Return Value:    None
+  */
+-static VOID stp_uart_tty_receive(struct tty_struct *tty, const PUINT8 data, PINT8 flags, INT32 count)
++static VOID stp_uart_tty_receive(struct tty_struct *tty, const unsigned char *data, const char *flags, INT32 count)
+ {
+ 	UINT32 written;
+ 
+@@ -517,7 +517,7 @@ static VOID stp_uart_tty_receive(struct tty_struct *tty, const PUINT8 data, PINT
+ 
+ #else
+ 
+-static VOID stp_uart_tty_receive(struct tty_struct *tty, const PUINT8 data, PINT8 flags, INT32 count)
++static VOID stp_uart_tty_receive(struct tty_struct *tty, const unsigned char *data, const char *flags, INT32 count)
+ {
+ 
+ #if 0
+@@ -570,19 +570,19 @@ static VOID stp_uart_tty_receive(struct tty_struct *tty, const PUINT8 data, PINT
+  *
+  * Return Value:    Command dependent
+  */
+-static INT32 stp_uart_tty_ioctl(struct tty_struct *tty, struct file *file, UINT32 cmd, ULONG arg)
++static INT32 stp_uart_tty_ioctl(struct tty_struct *tty, UINT32 cmd, ULONG arg)
+ {
+ 	INT32 err = 0;
+ 
+ 	switch (cmd) {
+ 	case HCIUARTSETPROTO:
+ 		UART_PR_DBG("<!!> Set low_latency to TRUE <!!>\n");
+-		tty->port->low_latency = 1;
++		/* pennyos: tty_port.low_latency was removed in 5.12 */
+ 
+ 		break;
+ 	default:
+ 		UART_PR_DBG("<!!> n_tty_ioctl_helper <!!>\n");
+-		err = n_tty_ioctl_helper(tty, file, cmd, arg);
++		err = n_tty_ioctl_helper(tty, cmd, arg);
+ 		break;
+ 	};
+ 
+@@ -593,7 +593,8 @@ static INT32 stp_uart_tty_ioctl(struct tty_struct *tty, struct file *file, UINT3
+  * We don't provide read/write/poll interface for user space.
+  */
+ static ssize_t stp_uart_tty_read(struct tty_struct *tty, struct file *file,
+-				 unsigned char __user *buf, size_t nr)
++				 unsigned char *buf, size_t nr,
++				 void **cookie, unsigned long offset)
+ {
+ 	return 0;
+ }
+@@ -604,7 +605,7 @@ static ssize_t stp_uart_tty_write(struct tty_struct *tty, struct file *file,
+ 	return 0;
+ }
+ 
+-static UINT32 stp_uart_tty_poll(struct tty_struct *tty, struct file *filp, poll_table *wait)
++static __poll_t stp_uart_tty_poll(struct tty_struct *tty, struct file *filp, poll_table *wait)
+ {
+ 	return 0;
+ }
+@@ -704,9 +705,11 @@ INT32 mtk_wcn_uart_tx(const PUINT8 data, const UINT32 size, PUINT32 written_size
+ 	return 0;
+ }
+ 
++/* pennyos: file scope, tty_unregister_ldisc() takes the ops since 5.14 */
++static struct tty_ldisc_ops stp_uart_ldisc;
++
+ static INT32 mtk_wcn_stp_uart_init(VOID)
+ {
+-	static struct tty_ldisc_ops stp_uart_ldisc;
+ 	INT32 err;
+ 	INT32 fifo_init_done = 0;
+ 
+@@ -751,7 +754,7 @@ static INT32 mtk_wcn_stp_uart_init(VOID)
+ 
+ 	/* Register the tty discipline */
+ 	memset(&stp_uart_ldisc, 0, sizeof(stp_uart_ldisc));
+-	stp_uart_ldisc.magic = TTY_LDISC_MAGIC;
++	stp_uart_ldisc.num = N_MTKSTP;
+ 	stp_uart_ldisc.name = "n_mtkstp";
+ 	stp_uart_ldisc.open = stp_uart_tty_open;
+ 	stp_uart_ldisc.close = stp_uart_tty_close;
+@@ -763,7 +766,7 @@ static INT32 mtk_wcn_stp_uart_init(VOID)
+ 	stp_uart_ldisc.write_wakeup = stp_uart_tty_wakeup;
+ 	stp_uart_ldisc.owner = THIS_MODULE;
+ 
+-	err = tty_register_ldisc(N_MTKSTP, &stp_uart_ldisc);
++	err = tty_register_ldisc(&stp_uart_ldisc);
+ 	if (err) {
+ 		UART_PR_ERR("MTK STP line discipline registration failed. (%d)\n", err);
+ 		goto init_err;
+@@ -800,14 +803,10 @@ init_err:
+ 
+ static VOID mtk_wcn_stp_uart_exit(VOID)
+ {
+-	INT32 err;
+-
+ 	mtk_wcn_stp_register_if_tx(STP_UART_IF_TX, NULL);	/* unregister if_tx function */
+ 
+ 	/* Release tty registration of line discipline */
+-	err = tty_unregister_ldisc(N_MTKSTP);
+-	if (err)
+-		UART_PR_ERR("Can't unregister MTK STP line discipline (%d)\n", err);
++	tty_unregister_ldisc(&stp_uart_ldisc);
+ 
+ #if (LDISC_RX == LDISC_RX_TASKLET)
+ 	tasklet_kill(&g_stp_uart_rx_fifo_tasklet);
+diff --git a/connectivity/common/common_main/linux/wmt_dbg.c b/connectivity/common/common_main/linux/wmt_dbg.c
+index e040070..a971c2e 100644
+--- a/connectivity/common/common_main/linux/wmt_dbg.c
++++ b/connectivity/common/common_main/linux/wmt_dbg.c
+@@ -1495,10 +1495,9 @@ ssize_t wmt_dbg_write(struct file *filp, const char __user *buffer, size_t count
+ 
+ INT32 wmt_dev_dbg_setup(VOID)
+ {
+-	static const struct file_operations wmt_dbg_fops = {
+-		.owner = THIS_MODULE,
+-		.read = wmt_dbg_read,
+-		.write = wmt_dbg_write,
++	static const struct proc_ops wmt_dbg_fops = {
++		.proc_read = wmt_dbg_read,
++		.proc_write = wmt_dbg_write,
+ 	};
+ 	INT32 i_ret = 0;
+ 
+diff --git a/connectivity/common/common_main/linux/wmt_dev.c b/connectivity/common/common_main/linux/wmt_dev.c
+index 71736bc..4787b88 100644
+--- a/connectivity/common/common_main/linux/wmt_dev.c
++++ b/connectivity/common/common_main/linux/wmt_dev.c
+@@ -405,10 +405,9 @@ static ssize_t wmt_dev_proc_for_aee_write(struct file *filp, const char __user *
+ 
+ INT32 wmt_dev_proc_for_aee_setup(VOID)
+ {
+-	static const struct file_operations wmt_aee_fops = {
+-		.owner = THIS_MODULE,
+-		.read = wmt_dev_proc_for_aee_read,
+-		.write = wmt_dev_proc_for_aee_write,
++	static const struct proc_ops wmt_aee_fops = {
++		.proc_read = wmt_dev_proc_for_aee_read,
++		.proc_write = wmt_dev_proc_for_aee_write,
+ 	};
+ 
+ 	gWmtAeeEntry = proc_create(WMT_AEE_PROCNAME, 0664, NULL, &wmt_aee_fops);
+@@ -1549,7 +1548,7 @@ static INT32 WMT_init(VOID)
+ 	WMT_INFO_FUNC("driver(major %d) installed\n", gWmtMajor);
+ 
+ #if WMT_CREATE_NODE_DYNAMIC
+-	wmt_class = class_create(THIS_MODULE, "stpwmt");
++	wmt_class = class_create("stpwmt");
+ 	if (IS_ERR(wmt_class))
+ 		goto error;
+ 	wmt_dev = device_create(wmt_class, NULL, devID, NULL, "stpwmt");
+diff --git a/connectivity/common/common_main/platform/mt6771.c b/connectivity/common/common_main/platform/mt6771.c
+index 9cb7965..d56311b 100644
+--- a/connectivity/common/common_main/platform/mt6771.c
++++ b/connectivity/common/common_main/platform/mt6771.c
+@@ -35,6 +35,7 @@
+ ********************************************************************************
+ */
+ #include <connectivity_build_in_adapter.h>
++#include <linux/pm_runtime.h>
+ #include <linux/clk.h>
+ #include <linux/delay.h>
+ #include <linux/memblock.h>
+@@ -114,6 +115,12 @@ struct bt_wifi_v33_status gBtWifiV33;
+ 
+ /* CCF part */
+ struct clk *clk_scp_conn_main;	/*ctrl conn_power_on/off */
++/*
++ * pennyos: mainline models CONN as a generic power domain (power-domains = ...
++ * in the DT), not as a clock. Without a "conn" clock we power the domain through
++ * runtime PM on the consys platform device instead.
++ */
++static struct device *consys_pd_dev;
+ 
+ /* PMIC part */
+ #if CONSYS_PMIC_CTRL_ENABLE
+@@ -361,8 +368,16 @@ static INT32 consys_clk_get_from_dts(struct platform_device *pdev)
+ {
+ 	clk_scp_conn_main = devm_clk_get(&pdev->dev, "conn");
+ 	if (IS_ERR(clk_scp_conn_main)) {
+-		WMT_PLAT_PR_ERR("[CCF]cannot get clk_scp_conn_main clock.\n");
+-		return PTR_ERR(clk_scp_conn_main);
++		if (!pdev->dev.pm_domain) {
++			WMT_PLAT_PR_ERR("[CCF]no \"conn\" clock and no power domain.\n");
++			return PTR_ERR(clk_scp_conn_main);
++		}
++		clk_scp_conn_main = NULL;
++		consys_pd_dev = &pdev->dev;
++		if (!pm_runtime_enabled(consys_pd_dev))
++			pm_runtime_enable(consys_pd_dev);
++		WMT_PLAT_PR_INFO("[CCF]using the CONN power domain via runtime PM\n");
++		return 0;
+ 	}
+ 	WMT_PLAT_PR_DBG("[CCF]clk_scp_conn_main=%p\n", clk_scp_conn_main);
+ 
+@@ -373,15 +388,31 @@ static INT32 consys_pmic_get_from_dts(struct platform_device *pdev)
+ {
+ #if CONSYS_PMIC_CTRL_ENABLE
+ 	reg_VCN18 = regulator_get(&pdev->dev, "vcn18");
++	if (IS_ERR(reg_VCN18)) {
++		WMT_PLAT_PR_ERR("pennyos: no \"vcn18\" supply (%ld), continuing without it\n", PTR_ERR(reg_VCN18));
++		reg_VCN18 = NULL;
++	}
+ 	if (!reg_VCN18)
+ 		WMT_PLAT_PR_ERR("Regulator_get VCN_1V8 fail\n");
+ 	reg_VCN28 = regulator_get(&pdev->dev, "vcn28");
++	if (IS_ERR(reg_VCN28)) {
++		WMT_PLAT_PR_ERR("pennyos: no \"vcn28\" supply (%ld), continuing without it\n", PTR_ERR(reg_VCN28));
++		reg_VCN28 = NULL;
++	}
+ 	if (!reg_VCN28)
+ 		WMT_PLAT_PR_ERR("Regulator_get VCN_2V8 fail\n");
+ 	reg_VCN33_BT = regulator_get(&pdev->dev, "vcn33_bt");
++	if (IS_ERR(reg_VCN33_BT)) {
++		WMT_PLAT_PR_ERR("pennyos: no \"vcn33_bt\" supply (%ld), continuing without it\n", PTR_ERR(reg_VCN33_BT));
++		reg_VCN33_BT = NULL;
++	}
+ 	if (!reg_VCN33_BT)
+ 		WMT_PLAT_PR_ERR("Regulator_get VCN33_BT fail\n");
+ 	reg_VCN33_WIFI = regulator_get(&pdev->dev, "vcn33_wifi");
++	if (IS_ERR(reg_VCN33_WIFI)) {
++		WMT_PLAT_PR_ERR("pennyos: no \"vcn33_wifi\" supply (%ld), continuing without it\n", PTR_ERR(reg_VCN33_WIFI));
++		reg_VCN33_WIFI = NULL;
++	}
+ 	if (!reg_VCN33_WIFI)
+ 		WMT_PLAT_PR_ERR("Regulator_get VCN33_WIFI fail\n");
+ #endif
+@@ -464,7 +495,10 @@ static INT32 consys_hw_power_ctrl(MTK_WCN_BOOL enable)
+ 
+ 	if (enable) {
+ #if CONSYS_PWR_ON_OFF_API_AVAILABLE
+-		iRet = clk_prepare_enable(clk_scp_conn_main);
++		if (consys_pd_dev)
++			iRet = pm_runtime_resume_and_get(consys_pd_dev);
++		else
++			iRet = clk_prepare_enable(clk_scp_conn_main);
+ 		if (iRet)
+ 			WMT_PLAT_PR_ERR("clk_prepare_enable(clk_scp_conn_main) fail(%d)\n", iRet);
+ 		WMT_PLAT_PR_DBG("clk_prepare_enable(clk_scp_conn_main) ok\n");
+@@ -522,7 +556,10 @@ static INT32 consys_hw_power_ctrl(MTK_WCN_BOOL enable)
+ #endif /* CONSYS_PWR_ON_OFF_API_AVAILABLE */
+ 	} else {
+ #if CONSYS_PWR_ON_OFF_API_AVAILABLE
+-		clk_disable_unprepare(clk_scp_conn_main);
++		if (consys_pd_dev)
++			pm_runtime_put_sync(consys_pd_dev);
++		else
++			clk_disable_unprepare(clk_scp_conn_main);
+ 		WMT_PLAT_PR_DBG("clk_disable_unprepare(clk_scp_conn_main) calling\n");
+ #else
+ 		/*disable AXI BUS protect 0x100012a0 [13][14] */
+diff --git a/connectivity/common/connectivity_build_in_adapter.c b/connectivity/common/connectivity_build_in_adapter.c
+index 0371a0b..f25fe30 100644
+--- a/connectivity/common/connectivity_build_in_adapter.c
++++ b/connectivity/common/connectivity_build_in_adapter.c
+@@ -18,7 +18,7 @@
+ 
+ #include "connectivity_build_in_adapter.h"
+ 
+-#include <kernel/sched/sched.h>
++/* pennyos: kernel/sched/sched.h is kernel-private and not usable from a module */
+ 
+ /*device tree mode*/
+ #ifdef CONFIG_OF
+@@ -90,18 +90,48 @@ int reserve_memory_consys_fn(struct reserved_mem *rmem)
+ 	return 0;
+ }
+ 
++#ifndef MODULE
+ RESERVEDMEM_OF_DECLARE(reserve_memory_test, "mediatek,consys-reserve-memory", reserve_memory_consys_fn);
++#else
++/* pennyos: RESERVEDMEM_OF_DECLARE() only works for built-in code (it is
++ * scanned by early boot code).  As a module, look the same node up in the
++ * reserved-memory table at module init instead; called from
++ * wmt_detect_driver_init().
++ */
++void connectivity_export_reserve_memory_consys_lookup(void)
++{
++	struct device_node *node;
++	struct reserved_mem *rmem;
++
++	node = of_find_compatible_node(NULL, NULL, "mediatek,consys-reserve-memory");
++	if (!node) {
++		pr_info(DFT_TAG "%s: no mediatek,consys-reserve-memory node\n", __func__);
++		return;
++	}
++	rmem = of_reserved_mem_lookup(node);
++	of_node_put(node);
++	if (!rmem) {
++		pr_info(DFT_TAG "%s: node is not a reserved-memory region\n", __func__);
++		return;
++	}
++	reserve_memory_consys_fn(rmem);
++}
++#endif
+ 
+ 
+ void connectivity_export_show_stack(struct task_struct *tsk, unsigned long *sp)
+ {
+-	show_stack(tsk, sp);
++	/* pennyos: show_stack() is not exported to modules; sched_show_task()
++	 * is, and prints the task state plus show_stack(tsk, NULL).
++	 */
++	sched_show_task(tsk);
+ }
+ EXPORT_SYMBOL(connectivity_export_show_stack);
+ 
+ void connectivity_export_tracing_record_cmdline(struct task_struct *tsk)
+ {
+-	tracing_record_cmdline(tsk);
++	/* pennyos: tracing_record_cmdline() is not exported to modules */
++	pennyos_shim_tracing_record_cmdline(tsk);
+ }
+ EXPORT_SYMBOL(connectivity_export_tracing_record_cmdline);
+ 
+@@ -241,18 +271,15 @@ EXPORT_SYMBOL(connectivity_export_upmu_set_vcn35_on_ctrl_wifi);
+ int connectivity_export_mmc_io_rw_direct(struct mmc_card *card, int write, unsigned fn,
+ 				unsigned addr, u8 in, u8 *out)
+ {
+-	return mmc_io_rw_direct(card, write, fn, addr, in, out);
++	/* pennyos: mmc_io_rw_direct() is not exported to modules */
++	return pennyos_shim_mmc_io_rw_direct(card, write, fn, addr, in, out);
+ }
+ EXPORT_SYMBOL(connectivity_export_mmc_io_rw_direct);
+ 
+ void connectivity_export_dump_thread_state(const char *name)
+ {
+-	static const char stat_nam[] = TASK_STATE_TO_CHAR_STR;
+ 	struct task_struct *p;
+ 	int cpu;
+-	struct rq *rq;
+-	struct task_struct *curr;
+-	struct thread_info *ti;
+ 
+ 	if (name == NULL || strlen(name) > 255) {
+ 		pr_info("invalid pointer:%p or thread name length too long\n", name);
+@@ -263,26 +290,17 @@ void connectivity_export_dump_thread_state(const char *name)
+ 
+ 	rcu_read_lock();
+ 	for_each_process(p) {
+-		unsigned long state;
+-
+ 		if (strncmp(p->comm, name, strlen(name)) != 0)
+ 			continue;
+-		state = p->state;
+ 		cpu = task_cpu(p);
+-		rq = cpu_rq(cpu);
+-		curr = rq->curr;
+-		ti = task_thread_info(curr);
+-		if (state)
+-			state = __ffs(state) + 1;
+-		pr_info("%d:%-15.15s %c", p->pid, p->comm,
+-			state < sizeof(stat_nam) - 1 ? stat_nam[state] : '?');
++		pr_info("%d:%-15.15s %c", p->pid, p->comm, task_state_to_char(p));
+ 		pr_info("cpu=%d on_cpu=%d ", cpu, p->on_cpu);
+-		show_stack(p, NULL);
+-		pr_info("CPU%d curr=%d:%-15.15s preempt_count=0x%x", cpu,
+-			curr->pid, curr->comm, ti->preempt_count);
+-
+-		if (state == TASK_RUNNING && curr != p)
+-			show_stack(curr, NULL);
++		/* pennyos: show_stack() is not exported; sched_show_task() is.
++		 * The vendor code also printed the task currently running on
++		 * that CPU via the scheduler's private runqueue (cpu_rq()),
++		 * which a module cannot reach - that part is dropped.
++		 */
++		sched_show_task(p);
+ 
+ 		break;
+ 	}
+diff --git a/connectivity/common/connectivity_build_in_adapter.h b/connectivity/common/connectivity_build_in_adapter.h
+index a410f04..a26bf7d 100644
+--- a/connectivity/common/connectivity_build_in_adapter.h
++++ b/connectivity/common/connectivity_build_in_adapter.h
+@@ -149,8 +149,13 @@ void connectivity_export_mt6306_set_gpio_dir(unsigned long pin, unsigned long di
+ 
+ unsigned int connectivity_export_slp_get_wake_reason(void);
+ unsigned int connectivity_export_spm_get_last_wakeup_src(void);
+-extern void tracing_record_cmdline(struct task_struct *tsk);
+-extern void show_stack(struct task_struct *tsk, unsigned long *sp);
++/* pennyos: the vendor's private prototypes of tracing_record_cmdline() and
++ * show_stack() are dropped (show_stack() has three arguments in 6.4 and
++ * neither function is exported to modules).
++ */
++#ifdef MODULE
++void connectivity_export_reserve_memory_consys_lookup(void);
++#endif
+ #ifdef CPU_BOOST
+ extern void mt_ppm_sysboost_freq(enum ppm_sysboost_user user, unsigned int freq);
+ extern void mt_ppm_sysboost_core(enum ppm_sysboost_user user, unsigned int core_num);
+diff --git a/connectivity/common/debug_utility/connsys_debug_utility.c b/connectivity/common/debug_utility/connsys_debug_utility.c
+index bf1ff58..5f4eaed 100644
+--- a/connectivity/common/debug_utility/connsys_debug_utility.c
++++ b/connectivity/common/debug_utility/connsys_debug_utility.c
+@@ -139,7 +139,7 @@ static void connlog_dump_buf(const char *title, const char *buf, ssize_t sz);
+ static void connlog_ring_print(int conn_type);
+ static void connlog_event_set(int conn_type);
+ static void connlog_log_data_handler(struct work_struct *work);
+-static void work_timer_handler(unsigned long data);
++static void work_timer_handler(struct timer_list *t);
+ static void connlog_do_schedule_work(bool count);
+ 
+ /* connlog when suspend */
+@@ -479,7 +479,7 @@ static void connlog_do_schedule_work(bool count)
+ * RETURNS
+ *  void
+ *****************************************************************************/
+-static void work_timer_handler(unsigned long data)
++static void work_timer_handler(struct timer_list *t)
+ {
+ 	connlog_do_schedule_work(false);
+ }
+@@ -940,8 +940,7 @@ int connsys_dedicated_log_path_apsoc_init(phys_addr_t emiaddr, unsigned int irq_
+ 		return -2;
+ 	}
+ 
+-	init_timer(&gDev.workTimer);
+-	gDev.workTimer.function = work_timer_handler;
++	timer_setup(&gDev.workTimer, work_timer_handler, 0);
+ 	spin_lock_init(&gDev.irq_lock);
+ 	INIT_WORK(&gDev.logDataWorker, connlog_log_data_handler);
+ 	if (connlog_eirq_init(irq_num, irq_flag)) {
+diff --git a/connectivity/wlan/adaptor/Kbuild b/connectivity/wlan/adaptor/Kbuild
+new file mode 100644
+index 0000000..b2f4a99
+--- /dev/null
++++ b/connectivity/wlan/adaptor/Kbuild
+@@ -0,0 +1,20 @@
++# SPDX-License-Identifier: GPL-2.0
++# pennyos replacement for connectivity/wlan/adaptor/Makefile
++# (CONFIG_WLAN_DRV_BUILD_IN=y in the vendor config; built as a module here).
++WMT_SRC_FOLDER := $(PENNYOS_ROOT)/connectivity/common
++ccflags-y += -I$(WMT_SRC_FOLDER)/common_main/include
++ccflags-y += -I$(WMT_SRC_FOLDER)/common_main/linux/include
++
++# CONFIG_MTK_CONN_LTE_IDC_SUPPORT=y
++ccflags-y += -D WMT_IDC_SUPPORT=1
++
++ccflags-y += -D MTK_WCN_WMT_STP_EXP_SYMBOL_ABSTRACT
++
++ccflags-y += -D CREATE_NODE_DYNAMIC=1
++
++MODULE_NAME := wmt_chrdev_wifi
++obj-m += $(MODULE_NAME).o
++
++# Wi-Fi character device driver
++$(MODULE_NAME)-objs += wmt_cdev_wifi.o
++# CONFIG_MTK_CONNSYS_DEDICATED_LOG_PATH unset: no fw_log_wifi.o
+diff --git a/connectivity/wlan/adaptor/wmt_cdev_wifi.c b/connectivity/wlan/adaptor/wmt_cdev_wifi.c
+index d61bf79..05e897a 100644
+--- a/connectivity/wlan/adaptor/wmt_cdev_wifi.c
++++ b/connectivity/wlan/adaptor/wmt_cdev_wifi.c
+@@ -593,7 +593,7 @@ static int WIFI_init(void)
+ 		goto error;
+ 
+ #if CREATE_NODE_DYNAMIC	/* mknod replace */
+-	wmtwifi_class = class_create(THIS_MODULE, "wmtWifi");
++	wmtwifi_class = class_create("wmtWifi");
+ 	if (IS_ERR(wmtwifi_class))
+ 		goto error;
+ 	wmtwifi_dev = device_create(wmtwifi_class, NULL, dev, NULL, "wmtWifi");
+diff --git a/connectivity/wlan/core/gen3/Kbuild b/connectivity/wlan/core/gen3/Kbuild
+new file mode 100644
+index 0000000..06a8472
+--- /dev/null
++++ b/connectivity/wlan/core/gen3/Kbuild
+@@ -0,0 +1,220 @@
++# SPDX-License-Identifier: GPL-2.0
++# pennyos replacement for connectivity/wlan/core/gen3/Makefile, evaluated for
++#   CONFIG_MTK_COMBO_CHIP="CONSYS_6771" (-> WLAN_CHIP_ID=MT6631),
++#   CONFIG_MTK_PLATFORM="mt6771", CONFIG_MTK_WIFI_MCC_SUPPORT=y,
++#   CONFIG_MTK_AEE_FEATURE=y, CONFIG_MTK_PASSPOINT_R2_SUPPORT unset,
++#   CONFIG_MTK_CONN_LTE_IDC_SUPPORT=y, CONFIG_ARCH_MT6797 unset,
++#   TARGET_BUILD_VARIANT=user (see below),
++#   MTK_PROJECT unset (no <project>/fw_config.c),
++#   CONFIG_WLAN_DRV_BUILD_IN=y in the vendor config, but built as a module here.
++# Object list and -D flags are in the same order as the vendor Makefile.
++
++MTK_PLATFORM := mt6771
++WLAN_CHIP_ID := MT6631
++
++# TARGET_BUILD_VARIANT is an Android build variable, not a kernel option.  The
++# phone's vendor firmware is a "user" build (ro.build.type=user), so that is
++# the default here: ASSERT() compiled out (BUILD_QA_DBG=0) and no
++# ENABLED_IN_ENGUSERDEBUG (no wifi.cfg override file).  Any other value, e.g.
++#   TARGET_BUILD_VARIANT=userdebug bash build.sh
++# gives the vendor's debug variant, in which a failed ASSERT() is
++# WARN_ON(1) + panic("Oops") (kalBreakPoint) and wifi.cfg is read.
++# (connectivity/common/Kbuild is hard-wired to the non-user variant.)
++TARGET_BUILD_VARIANT ?= user
++
++# ---------------------------------------------------------------------------
++# pennyos: kernel options the driver is written against.
++#
++# The vendor kernel has CONFIG_ANDROID=y; the driver tests it with "#if" to
++# select its wake lock code.  CONFIG_WAKELOCK is deliberately NOT defined so
++# the driver's own wakeup_source branch is used (linux/wakelock.h is gone).
++ccflags-y += -DCONFIG_ANDROID=1
++# CONFIG_MTK_QOS_SUPPORT=y in the vendor config (os/linux/plat/mt6771/plat_priv.c)
++ccflags-y += -DCONFIG_MTK_QOS_SUPPORT=1
++#
++# cfg80211 / wireless extensions.  The driver needs CONFIG_CFG80211,
++# CONFIG_NL80211_TESTMODE, CONFIG_WIRELESS_EXT (+ WEXT_CORE) and
++# CONFIG_WEXT_PRIV.  If the kernel in $(KDIR) has no cfg80211 at all, build in
++# "compile-check mode": pass those options as -D so the whole driver is still
++# compiled against the 6.4 headers (build.sh then expects the cfg80211 exports
++# to be undefined and says that the module must not be loaded).  With a
++# cfg80211-enabled kernel nothing is assumed; a missing option fails the build.
++ifndef CONFIG_CFG80211
++ccflags-y += -DCONFIG_CFG80211=1
++ccflags-y += -DCONFIG_NL80211_TESTMODE=1
++ccflags-y += -DCONFIG_WIRELESS_EXT=1
++ccflags-y += -DCONFIG_WEXT_CORE=1
++ccflags-y += -DCONFIG_WEXT_PRIV=1
++endif
++# ---------------------------------------------------------------------------
++
++DRIVER_BUILD_DATE=$(shell date +%Y%m%d%H%M%S)
++ccflags-y += -DDRIVER_BUILD_DATE='"$(DRIVER_BUILD_DATE)"'
++
++ccflags-y += -DLINUX -D$(WLAN_CHIP_ID)
++
++ccflags-y += -DCFG_SUPPORT_DEBUG_FS=0
++ccflags-y += -DWLAN_INCLUDE_PROC
++ccflags-y += -DCFG_SUPPORT_AGPS_ASSIST=1
++ccflags-y += -DCFG_SUPPORT_TSF_USING_BOOTTIME=1
++ccflags-y += -DARP_MONITER_ENABLE=1
++
++# CONFIG_MTK_WIFI_MCC_SUPPORT=y
++ccflags-y += -DCFG_SUPPORT_CHNL_CONFLICT_REVISE=0
++# CONFIG_MTK_AEE_FEATURE=y
++ccflags-y += -DCFG_SUPPORT_AEE=1
++# Disable ASSERT() for user load, enable for others
++ifneq ($(TARGET_BUILD_VARIANT),user)
++    ccflags-y += -DBUILD_QA_DBG=1
++else
++    ccflags-y += -DBUILD_QA_DBG=0
++endif
++# CONFIG_MTK_PASSPOINT_R2_SUPPORT unset
++ccflags-y += -DCFG_SUPPORT_PASSPOINT=0
++ccflags-y += -DCFG_HS20_DEBUG=0
++ccflags-y += -DCFG_ENABLE_GTK_FRAME_FILTER=0
++# MTK_MET_PROFILING_SUPPORT = yes
++ccflags-y += -DCFG_MET_PACKET_TRACE_SUPPORT=1
++# CONFIG_MTK_CONN_LTE_IDC_SUPPORT=y
++ccflags-y += -DWMT_IDC_SUPPORT=1
++
++ccflags-y += -DDBG=0
++
++# MT6631, "CONSYS_6771": emi_mpu temporarily disabled by the vendor
++ccflags-y += -DCFG_ENABLE_EMI_MPU=0
++# Only MT6631 firmware support to set or get log level by UI
++ccflags-y += -DCFG_SUPPORT_WIFI_FW_LOG_UI=1
++ccflags-y += -I$(src)/os -I$(src)/os/linux/include -I$(src)/os/linux/hif/ahb_sdioLike/include
++
++ccflags-y += -I$(src)/include -I$(src)/include/nic -I$(src)/include/mgmt
++
++WMT_SRC_FOLDER := $(PENNYOS_ROOT)/connectivity/common
++ccflags-y += -I$(WMT_SRC_FOLDER)/common_main/include
++ccflags-y += -I$(WMT_SRC_FOLDER)/common_main/linux/include
++ccflags-y += -I$(WMT_SRC_FOLDER)
++ccflags-y += -D MTK_WCN_WMT_STP_EXP_SYMBOL_ABSTRACT
++
++MODULE_NAME := wlan_drv_gen3
++obj-m += $(MODULE_NAME).o
++
++# ---------------------------------------------------
++# Directory List
++# ---------------------------------------------------
++COMMON_DIR  := common/
++OS_DIR      := os/linux/
++NIC_DIR     := nic/
++MGMT_DIR    := mgmt/
++
++HIF_DIR     := os/linux/hif/ahb_sdioLike/
++PLAT_DIR    := os/linux/plat/$(MTK_PLATFORM)/
++
++# ---------------------------------------------------
++# Objects List
++# ---------------------------------------------------
++
++COMMON_OBJS := $(COMMON_DIR)dump.o \
++	       $(COMMON_DIR)wlan_lib.o \
++	       $(COMMON_DIR)wlan_oid.o \
++	       $(COMMON_DIR)wlan_bow.o \
++	       $(COMMON_DIR)debug.o
++
++NIC_OBJS := $(NIC_DIR)nic.o \
++	    $(NIC_DIR)nic_tx.o \
++	    $(NIC_DIR)nic_rx.o \
++	    $(NIC_DIR)nic_pwr_mgt.o \
++	    $(NIC_DIR)nic_rate.o \
++	    $(NIC_DIR)cmd_buf.o \
++	    $(NIC_DIR)que_mgt.o \
++	    $(NIC_DIR)nic_cmd_event.o
++
++OS_OBJS :=  $(OS_DIR)gl_init.o \
++	    $(OS_DIR)gl_kal.o  \
++	    $(OS_DIR)gl_bow.o \
++	    $(OS_DIR)gl_wext.o \
++	    $(OS_DIR)gl_wext_priv.o \
++	    $(OS_DIR)gl_ate_agent.o \
++	    $(OS_DIR)gl_qa_agent.o \
++	    $(OS_DIR)gl_hook_api.o \
++	    $(OS_DIR)gl_proc.o \
++	    $(OS_DIR)gl_rst.o \
++	    $(OS_DIR)gl_cfg80211.o \
++	    $(OS_DIR)gl_vendor.o \
++	    $(OS_DIR)platform.o
++
++MGMT_OBJS := $(MGMT_DIR)ais_fsm.o \
++	     $(MGMT_DIR)aaa_fsm.o \
++	     $(MGMT_DIR)assoc.o \
++	     $(MGMT_DIR)auth.o \
++	     $(MGMT_DIR)bss.o \
++	     $(MGMT_DIR)cnm.o \
++	     $(MGMT_DIR)cnm_timer.o \
++	     $(MGMT_DIR)cnm_mem.o \
++	     $(MGMT_DIR)hem_mbox.o \
++	     $(MGMT_DIR)mib.o \
++	     $(MGMT_DIR)privacy.o  \
++	     $(MGMT_DIR)rate.o \
++	     $(MGMT_DIR)rlm.o \
++	     $(MGMT_DIR)rlm_domain.o \
++	     $(MGMT_DIR)rlm_obss.o \
++	     $(MGMT_DIR)rlm_protection.o \
++	     $(MGMT_DIR)rsn.o \
++	     $(MGMT_DIR)saa_fsm.o \
++	     $(MGMT_DIR)scan.o \
++	     $(MGMT_DIR)scan_fsm.o \
++	     $(MGMT_DIR)swcr.o \
++	     $(MGMT_DIR)roaming_fsm.o \
++	     $(MGMT_DIR)tkip_mic.o \
++	     $(MGMT_DIR)hs20.o \
++	     $(MGMT_DIR)tdls.o \
++	     $(MGMT_DIR)wnm.o \
++	     $(MGMT_DIR)qosmap.o \
++	     $(MGMT_DIR)wmm.o
++# STATS Objects List
++MGMT_OBJS += $(MGMT_DIR)stats.o
++
++# P2P Objects List
++COMMON_OBJS += $(COMMON_DIR)wlan_p2p.o
++
++NIC_OBJS += $(NIC_DIR)p2p_nic.o
++
++OS_OBJS += $(OS_DIR)gl_p2p.o \
++	   $(OS_DIR)gl_p2p_cfg80211.o \
++	   $(OS_DIR)gl_p2p_init.o \
++	   $(OS_DIR)gl_p2p_kal.o
++
++MGMT_OBJS += $(MGMT_DIR)p2p_dev_fsm.o \
++	     $(MGMT_DIR)p2p_dev_state.o \
++	     $(MGMT_DIR)p2p_role_fsm.o \
++	     $(MGMT_DIR)p2p_role_state.o \
++	     $(MGMT_DIR)p2p_func.o \
++	     $(MGMT_DIR)p2p_scan.o \
++	     $(MGMT_DIR)p2p_ie.o \
++	     $(MGMT_DIR)p2p_rlm.o \
++	     $(MGMT_DIR)p2p_assoc.o \
++	     $(MGMT_DIR)p2p_bss.o \
++	     $(MGMT_DIR)p2p_rlm_obss.o
++
++MGMT_OBJS += $(MGMT_DIR)wapi.o
++
++HIF_OBJS :=  $(HIF_DIR)arm.o
++# MT6631
++HIF_OBJS += $(HIF_DIR)ahb.o\
++	    $(HIF_DIR)sdio_bus_driver.o
++# CONFIG_ARCH_MT6797 unset
++HIF_OBJS += $(HIF_DIR)ahb_cqdma.o
++# os/linux/plat/mt6771/plat_priv.c exists
++PLAT_OBJS := $(PLAT_DIR)plat_priv.o
++$(MODULE_NAME)-objs  += $(PLAT_OBJS)
++
++# FW customization (FW_CUSTOMIZATION = y; no $(MTK_PROJECT)/fw_config.c)
++COMMON_OBJS += $(COMMON_DIR)fwcfg.o
++ccflags-y += -DFW_CFG_SUPPORT
++ifneq ($(TARGET_BUILD_VARIANT), user)
++    ccflags-y += -DENABLED_IN_ENGUSERDEBUG
++endif
++
++$(MODULE_NAME)-objs  += $(COMMON_OBJS)
++$(MODULE_NAME)-objs  += $(NIC_OBJS)
++$(MODULE_NAME)-objs  += $(OS_OBJS)
++$(MODULE_NAME)-objs  += $(HIF_OBJS)
++$(MODULE_NAME)-objs  += $(MGMT_OBJS)
+diff --git a/connectivity/wlan/core/gen3/include/nic/wlan_def.h b/connectivity/wlan/core/gen3/include/nic/wlan_def.h
+index 38a2663..3827b46 100644
+--- a/connectivity/wlan/core/gen3/include/nic/wlan_def.h
++++ b/connectivity/wlan/core/gen3/include/nic/wlan_def.h
+@@ -525,6 +525,13 @@ typedef enum _ENUM_MODULATION_TYPE_T {
+ 	MODULATION_TYPE_NUM
+ } ENUM_MODULATION_TYPE_T, *P_ENUM_MODULATION_TYPE_T;
+ 
++/* pennyos: on 6.4 <linux/fb.h> pulls in <acpi/actypes.h>, whose ACPI_STATE_Dx
++ * macros collide with these enumerators (same numeric values 0..3).
++ */
++#undef ACPI_STATE_D0
++#undef ACPI_STATE_D1
++#undef ACPI_STATE_D2
++#undef ACPI_STATE_D3
+ typedef enum _ENUM_ACPI_STATE_T {
+ 	ACPI_STATE_D0 = 0,
+ 	ACPI_STATE_D1,
+diff --git a/connectivity/wlan/core/gen3/os/linux/gl_bow.c b/connectivity/wlan/core/gen3/os/linux/gl_bow.c
+index 9804e43..e28ee80 100644
+--- a/connectivity/wlan/core/gen3/os/linux/gl_bow.c
++++ b/connectivity/wlan/core/gen3/os/linux/gl_bow.c
+@@ -354,9 +354,9 @@ static long bow_ampc_ioctl(IN struct file *filp, IN unsigned int cmd, IN OUT uns
+ 		return -EFAULT;
+ 	/* permission check */
+ 	if (_IOC_DIR(cmd) & _IOC_READ)
+-		err = !access_ok(VERIFY_WRITE, (void __user *)arg, _IOC_SIZE(cmd));
++		err = !access_ok((void __user *)arg, _IOC_SIZE(cmd));
+ 	else if (_IOC_DIR(cmd) & _IOC_WRITE)
+-		err = !access_ok(VERIFY_READ, (void __user *)arg, _IOC_SIZE(cmd));
++		err = !access_ok((void __user *)arg, _IOC_SIZE(cmd));
+ 	if (err)
+ 		return -EFAULT;
+ 
+@@ -1058,7 +1058,8 @@ BOOLEAN kalInitBowDevice(IN P_GLUE_INFO_T prGlueInfo, IN const char *prDevName)
+ 		/* 1.2 fill hardware address */
+ 		COPY_MAC_ADDR(rMacAddr, prAdapter->rMyMacAddr);
+ 		rMacAddr[0] |= 0x2;	/* change to local administrated address */
+-		ether_addr_copy(prGlueInfo->rBowInfo.prDevHandler->dev_addr, rMacAddr);
++		/* pennyos: net_device->dev_addr is const since 5.17 */
++		eth_hw_addr_set(prGlueInfo->rBowInfo.prDevHandler, rMacAddr);
+ 		ether_addr_copy(prGlueInfo->rBowInfo.prDevHandler->perm_addr,
+ 		       prGlueInfo->rBowInfo.prDevHandler->dev_addr);
+ 
+diff --git a/connectivity/wlan/core/gen3/os/linux/gl_cfg80211.c b/connectivity/wlan/core/gen3/os/linux/gl_cfg80211.c
+index cec0993..60e7387 100644
+--- a/connectivity/wlan/core/gen3/os/linux/gl_cfg80211.c
++++ b/connectivity/wlan/core/gen3/os/linux/gl_cfg80211.c
+@@ -148,7 +148,7 @@ mtk_cfg80211_change_iface(struct wiphy *wiphy,
+ /*----------------------------------------------------------------------------*/
+ int
+ mtk_cfg80211_add_key(struct wiphy *wiphy,
+-		     struct net_device *ndev,
++		     struct net_device *ndev, int link_id,
+ 		     u8 key_index, bool pairwise, const u8 *mac_addr, struct key_params *params)
+ {
+ 	PARAM_KEY_T rKey;
+@@ -235,7 +235,7 @@ mtk_cfg80211_add_key(struct wiphy *wiphy,
+ /*----------------------------------------------------------------------------*/
+ int
+ mtk_cfg80211_get_key(struct wiphy *wiphy,
+-		     struct net_device *ndev,
++		     struct net_device *ndev, int link_id,
+ 		     u8 key_index,
+ 		     bool pairwise,
+ 		     const u8 *mac_addr, void *cookie, void (*callback) (void *cookie, struct key_params *))
+@@ -264,7 +264,7 @@ mtk_cfg80211_get_key(struct wiphy *wiphy,
+  *         others:  failure
+  */
+ /*----------------------------------------------------------------------------*/
+-int mtk_cfg80211_del_key(struct wiphy *wiphy, struct net_device *ndev, u8 key_index, bool pairwise, const u8 *mac_addr)
++int mtk_cfg80211_del_key(struct wiphy *wiphy, struct net_device *ndev, int link_id, u8 key_index, bool pairwise, const u8 *mac_addr)
+ {
+ 	P_GLUE_INFO_T prGlueInfo = NULL;
+ 	WLAN_STATUS rStatus = WLAN_STATUS_SUCCESS;
+@@ -314,7 +314,7 @@ int mtk_cfg80211_del_key(struct wiphy *wiphy, struct net_device *ndev, u8 key_in
+  */
+ /*----------------------------------------------------------------------------*/
+ int
+-mtk_cfg80211_set_default_key(struct wiphy *wiphy, struct net_device *ndev, u8 key_index, bool unicast, bool multicast)
++mtk_cfg80211_set_default_key(struct wiphy *wiphy, struct net_device *ndev, int link_id, u8 key_index, bool unicast, bool multicast)
+ {
+ 	P_GLUE_INFO_T prGlueInfo = NULL;
+ 	PARAM_DEFAULT_KEY_T rDefaultKey;
+@@ -891,7 +891,8 @@ int mtk_cfg80211_connect(struct wiphy *wiphy, struct net_device *ndev, struct cf
+ 	 * Beacaus driver disconnected is done, but cfg80211 is disconnecting.
+ 	 * Reject this request.Supplicant will issue the connecting request again.
+ 	 */
+-	if (wdev->current_bss &&
++	/* pennyos: 6.0+: wdev->links[0].client.current_bss */
++	if (wdev->links[0].client.current_bss &&
+ 		kalGetMediaStateIndicated(prGlueInfo) == PARAM_MEDIA_STATE_DISCONNECTED) {
+ 		DBGLOG(REQ, WARN, "Reject this connecting request\n");
+ 		return -EALREADY;
+@@ -2713,19 +2714,19 @@ mtk_cfg80211_change_station(struct wiphy *wiphy, struct net_device *ndev, const
+ 
+ 	if (params == NULL)
+ 		return 0;
+-	else if (params->supported_rates == NULL)
++	else if (params->link_sta_params.supported_rates == NULL)
+ 		return 0;
+ 
+ 	/* init */
+ 	kalMemZero(&rCmdUpdate, sizeof(rCmdUpdate));
+ 	kalMemCopy(rCmdUpdate.aucPeerMac, mac, 6);
+ 
+-	if (params->supported_rates != NULL) {
++	if (params->link_sta_params.supported_rates != NULL) {
+ 
+-		u4Temp = params->supported_rates_len;
++		u4Temp = params->link_sta_params.supported_rates_len;
+ 		if (u4Temp > CMD_PEER_UPDATE_SUP_RATE_MAX)
+ 			u4Temp = CMD_PEER_UPDATE_SUP_RATE_MAX;
+-		kalMemCopy(rCmdUpdate.aucSupRate, params->supported_rates, u4Temp);
++		kalMemCopy(rCmdUpdate.aucSupRate, params->link_sta_params.supported_rates, u4Temp);
+ 		rCmdUpdate.u2SupRateLen = u4Temp;
+ 	}
+ 
+@@ -2747,23 +2748,23 @@ mtk_cfg80211_change_station(struct wiphy *wiphy, struct net_device *ndev, const
+ 		rCmdUpdate.u2ExtCapLen = u4Temp;
+ 	}
+ 
+-	if (params->ht_capa != NULL) {
++	if (params->link_sta_params.ht_capa != NULL) {
+ 
+-		rCmdUpdate.rHtCap.u2CapInfo = params->ht_capa->cap_info;
+-		rCmdUpdate.rHtCap.ucAmpduParamsInfo = params->ht_capa->ampdu_params_info;
+-		rCmdUpdate.rHtCap.u2ExtHtCapInfo = params->ht_capa->extended_ht_cap_info;
+-		rCmdUpdate.rHtCap.u4TxBfCapInfo = params->ht_capa->tx_BF_cap_info;
+-		rCmdUpdate.rHtCap.ucAntennaSelInfo = params->ht_capa->antenna_selection_info;
++		rCmdUpdate.rHtCap.u2CapInfo = params->link_sta_params.ht_capa->cap_info;
++		rCmdUpdate.rHtCap.ucAmpduParamsInfo = params->link_sta_params.ht_capa->ampdu_params_info;
++		rCmdUpdate.rHtCap.u2ExtHtCapInfo = params->link_sta_params.ht_capa->extended_ht_cap_info;
++		rCmdUpdate.rHtCap.u4TxBfCapInfo = params->link_sta_params.ht_capa->tx_BF_cap_info;
++		rCmdUpdate.rHtCap.ucAntennaSelInfo = params->link_sta_params.ht_capa->antenna_selection_info;
+ 		kalMemCopy(rCmdUpdate.rHtCap.rMCS.arRxMask,
+-			   params->ht_capa->mcs.rx_mask, sizeof(rCmdUpdate.rHtCap.rMCS.arRxMask));
++			   params->link_sta_params.ht_capa->mcs.rx_mask, sizeof(rCmdUpdate.rHtCap.rMCS.arRxMask));
+ 
+-		rCmdUpdate.rHtCap.rMCS.u2RxHighest = params->ht_capa->mcs.rx_highest;
+-		rCmdUpdate.rHtCap.rMCS.ucTxParams = params->ht_capa->mcs.tx_params;
++		rCmdUpdate.rHtCap.rMCS.u2RxHighest = params->link_sta_params.ht_capa->mcs.rx_highest;
++		rCmdUpdate.rHtCap.rMCS.ucTxParams = params->link_sta_params.ht_capa->mcs.tx_params;
+ 		rCmdUpdate.fgIsSupHt = TRUE;
+ 	}
+ 	/* vht */
+ 
+-	if (params->vht_capa != NULL) {
++	if (params->link_sta_params.vht_capa != NULL) {
+ 		/* rCmdUpdate.rVHtCap */
+ 		/* rCmdUpdate.rVHtCap */
+ 	}
+@@ -2906,7 +2907,7 @@ int mtk_cfg80211_del_station(struct wiphy *wiphy, struct net_device *ndev, const
+ /*----------------------------------------------------------------------------*/
+ int
+ mtk_cfg80211_tdls_mgmt(struct wiphy *wiphy, struct net_device *dev,
+-		       const u8 *peer, u8 action_code, u8 dialog_token,
++		       const u8 *peer, int link_id, u8 action_code, u8 dialog_token,
+ 		       u16 status_code, u32 peer_capability,
+ 		       bool initiator, const u8 *buf, size_t len)
+ {
+diff --git a/connectivity/wlan/core/gen3/os/linux/gl_init.c b/connectivity/wlan/core/gen3/os/linux/gl_init.c
+index 4048668..71f83dd 100644
+--- a/connectivity/wlan/core/gen3/os/linux/gl_init.c
++++ b/connectivity/wlan/core/gen3/os/linux/gl_init.c
+@@ -258,6 +258,20 @@ struct delayed_work sched_workq;
+ ********************************************************************************
+ */
+ 
++/* pennyos: 5.8 replaced .mgmt_frame_register (one call per frame type) by
++ * .update_mgmt_frame_registrations (the complete set of registered subtypes).
++ * Feed the vendor handler the two frame types it knows about.
++ */
++static void mtk_cfg80211_update_mgmt_frame_registrations(struct wiphy *wiphy,
++							 struct wireless_dev *wdev,
++							 struct mgmt_frame_regs *upd)
++{
++	mtk_cfg80211_mgmt_frame_register(wiphy, wdev, MAC_FRAME_PROBE_REQ,
++		!!(upd->interface_stypes & BIT(IEEE80211_STYPE_PROBE_REQ >> 4)));
++	mtk_cfg80211_mgmt_frame_register(wiphy, wdev, MAC_FRAME_ACTION,
++		!!(upd->interface_stypes & BIT(IEEE80211_STYPE_ACTION >> 4)));
++}
++
+ static struct cfg80211_ops mtk_wlan_ops = {
+ 	.suspend = mtk_cfg80211_suspend,
+ 	.resume	= mtk_cfg80211_resume,
+@@ -293,7 +307,7 @@ static struct cfg80211_ops mtk_wlan_ops = {
+ 	.cancel_remain_on_channel = mtk_cfg80211_cancel_remain_on_channel,
+ 	.mgmt_tx = mtk_cfg80211_mgmt_tx,
+ 	/* .mgmt_tx_cancel_wait        = mtk_cfg80211_mgmt_tx_cancel_wait, */
+-	.mgmt_frame_register = mtk_cfg80211_mgmt_frame_register,
++	.update_mgmt_frame_registrations = mtk_cfg80211_update_mgmt_frame_registrations,
+ #ifdef CONFIG_NL80211_TESTMODE
+ 	.testmode_cmd = mtk_cfg80211_testmode_cmd,
+ #endif
+@@ -313,7 +327,9 @@ static const struct wiphy_vendor_command mtk_wlan_vendor_ops[] = {
+ 			.subcmd = WIFI_SUBCMD_GET_CHANNEL_LIST
+ 		},
+ 		.flags = WIPHY_VENDOR_CMD_NEED_WDEV | WIPHY_VENDOR_CMD_NEED_NETDEV,
+-		.doit = mtk_cfg80211_vendor_get_channel_list
++		.doit = mtk_cfg80211_vendor_get_channel_list,
++		/* pennyos: 5.3+ refuses vendor commands without a policy */
++		.policy = VENDOR_CMD_RAW_DATA
+ 	},
+ 	{
+ 		{
+@@ -321,7 +337,9 @@ static const struct wiphy_vendor_command mtk_wlan_vendor_ops[] = {
+ 			.subcmd = WIFI_SUBCMD_SET_COUNTRY_CODE
+ 		},
+ 		.flags = WIPHY_VENDOR_CMD_NEED_WDEV | WIPHY_VENDOR_CMD_NEED_NETDEV,
+-		.doit = mtk_cfg80211_vendor_set_country_code
++		.doit = mtk_cfg80211_vendor_set_country_code,
++		/* pennyos: 5.3+ refuses vendor commands without a policy */
++		.policy = VENDOR_CMD_RAW_DATA
+ 	},
+ 	/* Roaming */
+ 	{
+@@ -330,7 +348,9 @@ static const struct wiphy_vendor_command mtk_wlan_vendor_ops[] = {
+ 			.subcmd = WIFI_SUBCMD_GET_ROAMING_CAPABILITIES
+ 		},
+ 		.flags = WIPHY_VENDOR_CMD_NEED_WDEV | WIPHY_VENDOR_CMD_NEED_NETDEV,
+-		.doit = mtk_cfg80211_vendor_get_roaming_capabilities
++		.doit = mtk_cfg80211_vendor_get_roaming_capabilities,
++		/* pennyos: 5.3+ refuses vendor commands without a policy */
++		.policy = VENDOR_CMD_RAW_DATA
+ 	},
+ 	{
+ 		{
+@@ -338,7 +358,9 @@ static const struct wiphy_vendor_command mtk_wlan_vendor_ops[] = {
+ 			.subcmd = WIFI_SUBCMD_CONFIG_ROAMING
+ 		},
+ 		.flags = WIPHY_VENDOR_CMD_NEED_WDEV | WIPHY_VENDOR_CMD_NEED_NETDEV,
+-		.doit = mtk_cfg80211_vendor_config_roaming
++		.doit = mtk_cfg80211_vendor_config_roaming,
++		/* pennyos: 5.3+ refuses vendor commands without a policy */
++		.policy = VENDOR_CMD_RAW_DATA
+ 	},
+ 	{
+ 		{
+@@ -346,7 +368,9 @@ static const struct wiphy_vendor_command mtk_wlan_vendor_ops[] = {
+ 			.subcmd = WIFI_SUBCMD_ENABLE_ROAMING
+ 		},
+ 		.flags = WIPHY_VENDOR_CMD_NEED_WDEV | WIPHY_VENDOR_CMD_NEED_NETDEV,
+-		.doit = mtk_cfg80211_vendor_enable_roaming
++		.doit = mtk_cfg80211_vendor_enable_roaming,
++		/* pennyos: 5.3+ refuses vendor commands without a policy */
++		.policy = VENDOR_CMD_RAW_DATA
+ 	},
+ 	/* GSCAN */
+ #if CFG_SUPPORT_GSCN
+@@ -356,7 +380,9 @@ static const struct wiphy_vendor_command mtk_wlan_vendor_ops[] = {
+ 			.subcmd = GSCAN_SUBCMD_GET_CAPABILITIES
+ 		},
+ 		.flags = WIPHY_VENDOR_CMD_NEED_WDEV | WIPHY_VENDOR_CMD_NEED_NETDEV,
+-		.doit = mtk_cfg80211_vendor_get_gscan_capabilities
++		.doit = mtk_cfg80211_vendor_get_gscan_capabilities,
++		/* pennyos: 5.3+ refuses vendor commands without a policy */
++		.policy = VENDOR_CMD_RAW_DATA
+ 	},
+ 	{
+ 		{
+@@ -364,7 +390,9 @@ static const struct wiphy_vendor_command mtk_wlan_vendor_ops[] = {
+ 			.subcmd = GSCAN_SUBCMD_SET_CONFIG
+ 		},
+ 		.flags = WIPHY_VENDOR_CMD_NEED_WDEV | WIPHY_VENDOR_CMD_NEED_NETDEV,
+-		.doit = mtk_cfg80211_vendor_set_config
++		.doit = mtk_cfg80211_vendor_set_config,
++		/* pennyos: 5.3+ refuses vendor commands without a policy */
++		.policy = VENDOR_CMD_RAW_DATA
+ 	},
+ 	{
+ 		{
+@@ -372,7 +400,9 @@ static const struct wiphy_vendor_command mtk_wlan_vendor_ops[] = {
+ 			.subcmd = GSCAN_SUBCMD_SET_SCAN_CONFIG
+ 		},
+ 		.flags = WIPHY_VENDOR_CMD_NEED_WDEV | WIPHY_VENDOR_CMD_NEED_NETDEV,
+-		.doit = mtk_cfg80211_vendor_set_scan_config
++		.doit = mtk_cfg80211_vendor_set_scan_config,
++		/* pennyos: 5.3+ refuses vendor commands without a policy */
++		.policy = VENDOR_CMD_RAW_DATA
+ 	},
+ 	{
+ 		{
+@@ -380,7 +410,9 @@ static const struct wiphy_vendor_command mtk_wlan_vendor_ops[] = {
+ 			.subcmd = GSCAN_SUBCMD_ENABLE_GSCAN
+ 		},
+ 		.flags = WIPHY_VENDOR_CMD_NEED_WDEV | WIPHY_VENDOR_CMD_NEED_NETDEV,
+-		.doit = mtk_cfg80211_vendor_enable_scan
++		.doit = mtk_cfg80211_vendor_enable_scan,
++		/* pennyos: 5.3+ refuses vendor commands without a policy */
++		.policy = VENDOR_CMD_RAW_DATA
+ 	},
+ 	{
+ 		{
+@@ -388,7 +420,9 @@ static const struct wiphy_vendor_command mtk_wlan_vendor_ops[] = {
+ 			.subcmd = GSCAN_SUBCMD_ENABLE_FULL_SCAN_RESULTS
+ 		},
+ 		.flags = WIPHY_VENDOR_CMD_NEED_WDEV | WIPHY_VENDOR_CMD_NEED_NETDEV,
+-		.doit = mtk_cfg80211_vendor_enable_full_scan_results
++		.doit = mtk_cfg80211_vendor_enable_full_scan_results,
++		/* pennyos: 5.3+ refuses vendor commands without a policy */
++		.policy = VENDOR_CMD_RAW_DATA
+ 	},
+ 	{
+ 		{
+@@ -396,7 +430,9 @@ static const struct wiphy_vendor_command mtk_wlan_vendor_ops[] = {
+ 			.subcmd = GSCAN_SUBCMD_GET_SCAN_RESULTS
+ 		},
+ 		.flags = WIPHY_VENDOR_CMD_NEED_WDEV | WIPHY_VENDOR_CMD_NEED_NETDEV,
+-		.doit = mtk_cfg80211_vendor_get_gscan_result
++		.doit = mtk_cfg80211_vendor_get_gscan_result,
++		/* pennyos: 5.3+ refuses vendor commands without a policy */
++		.policy = VENDOR_CMD_RAW_DATA
+ 	},
+ 	{
+ 		{
+@@ -404,7 +440,9 @@ static const struct wiphy_vendor_command mtk_wlan_vendor_ops[] = {
+ 			.subcmd = GSCAN_SUBCMD_SET_SIGNIFICANT_CHANGE_CONFIG
+ 		},
+ 		.flags = WIPHY_VENDOR_CMD_NEED_WDEV | WIPHY_VENDOR_CMD_NEED_NETDEV,
+-		.doit = mtk_cfg80211_vendor_set_significant_change
++		.doit = mtk_cfg80211_vendor_set_significant_change,
++		/* pennyos: 5.3+ refuses vendor commands without a policy */
++		.policy = VENDOR_CMD_RAW_DATA
+ 	},
+ 	{
+ 		{
+@@ -412,7 +450,9 @@ static const struct wiphy_vendor_command mtk_wlan_vendor_ops[] = {
+ 			.subcmd = GSCAN_SUBCMD_SET_HOTLIST
+ 		},
+ 		.flags = WIPHY_VENDOR_CMD_NEED_WDEV | WIPHY_VENDOR_CMD_NEED_NETDEV,
+-		.doit = mtk_cfg80211_vendor_set_hotlist
++		.doit = mtk_cfg80211_vendor_set_hotlist,
++		/* pennyos: 5.3+ refuses vendor commands without a policy */
++		.policy = VENDOR_CMD_RAW_DATA
+ 	},
+ #endif
+ 	/* RTT */
+@@ -422,7 +462,9 @@ static const struct wiphy_vendor_command mtk_wlan_vendor_ops[] = {
+ 			.subcmd = RTT_SUBCMD_GETCAPABILITY
+ 		},
+ 		.flags = WIPHY_VENDOR_CMD_NEED_WDEV | WIPHY_VENDOR_CMD_NEED_NETDEV,
+-		.doit = mtk_cfg80211_vendor_get_rtt_capabilities
++		.doit = mtk_cfg80211_vendor_get_rtt_capabilities,
++		/* pennyos: 5.3+ refuses vendor commands without a policy */
++		.policy = VENDOR_CMD_RAW_DATA
+ 	},
+ 	/* Link Layer Statistics */
+ 	{
+@@ -431,7 +473,9 @@ static const struct wiphy_vendor_command mtk_wlan_vendor_ops[] = {
+ 			.subcmd = LSTATS_SUBCMD_GET_INFO
+ 		},
+ 		.flags = WIPHY_VENDOR_CMD_NEED_WDEV | WIPHY_VENDOR_CMD_NEED_NETDEV,
+-		.doit = mtk_cfg80211_vendor_llstats_get_info
++		.doit = mtk_cfg80211_vendor_llstats_get_info,
++		/* pennyos: 5.3+ refuses vendor commands without a policy */
++		.policy = VENDOR_CMD_RAW_DATA
+ 	},
+ 	/* RSSI Monitoring */
+ 	{
+@@ -440,7 +484,9 @@ static const struct wiphy_vendor_command mtk_wlan_vendor_ops[] = {
+ 			.subcmd = WIFI_SUBCMD_SET_RSSI_MONITOR
+ 		},
+ 		.flags = WIPHY_VENDOR_CMD_NEED_WDEV | WIPHY_VENDOR_CMD_NEED_NETDEV,
+-		.doit = mtk_cfg80211_vendor_set_rssi_monitoring
++		.doit = mtk_cfg80211_vendor_set_rssi_monitoring,
++		/* pennyos: 5.3+ refuses vendor commands without a policy */
++		.policy = VENDOR_CMD_RAW_DATA
+ 	},
+ 	/* Packet Keep Alive */
+ 	{
+@@ -449,7 +495,9 @@ static const struct wiphy_vendor_command mtk_wlan_vendor_ops[] = {
+ 			.subcmd = WIFI_OFFLOAD_START_MKEEP_ALIVE
+ 		},
+ 		.flags = WIPHY_VENDOR_CMD_NEED_WDEV | WIPHY_VENDOR_CMD_NEED_NETDEV,
+-		.doit = mtk_cfg80211_vendor_packet_keep_alive_start
++		.doit = mtk_cfg80211_vendor_packet_keep_alive_start,
++		/* pennyos: 5.3+ refuses vendor commands without a policy */
++		.policy = VENDOR_CMD_RAW_DATA
+ 	},
+ 	{
+ 		{
+@@ -457,7 +505,9 @@ static const struct wiphy_vendor_command mtk_wlan_vendor_ops[] = {
+ 			.subcmd = WIFI_OFFLOAD_STOP_MKEEP_ALIVE
+ 		},
+ 		.flags = WIPHY_VENDOR_CMD_NEED_WDEV | WIPHY_VENDOR_CMD_NEED_NETDEV,
+-		.doit = mtk_cfg80211_vendor_packet_keep_alive_stop
++		.doit = mtk_cfg80211_vendor_packet_keep_alive_stop,
++		/* pennyos: 5.3+ refuses vendor commands without a policy */
++		.policy = VENDOR_CMD_RAW_DATA
+ 	},
+ 	{
+ 		{
+@@ -466,7 +516,9 @@ static const struct wiphy_vendor_command mtk_wlan_vendor_ops[] = {
+ 		},
+ 		.flags = WIPHY_VENDOR_CMD_NEED_WDEV
+ 			| WIPHY_VENDOR_CMD_NEED_NETDEV,
+-		.doit = mtk_cfg80211_vendor_set_scan_mac_oui
++		.doit = mtk_cfg80211_vendor_set_scan_mac_oui,
++		/* pennyos: 5.3+ refuses vendor commands without a policy */
++		.policy = VENDOR_CMD_RAW_DATA
+ 	},
+ 	{
+ 		{
+@@ -474,7 +526,9 @@ static const struct wiphy_vendor_command mtk_wlan_vendor_ops[] = {
+ 			.subcmd = QCA_NL80211_VENDOR_SUBCMD_ROAMING
+ 		},
+ 		.flags = WIPHY_VENDOR_CMD_NEED_WDEV | WIPHY_VENDOR_CMD_NEED_NETDEV,
+-		.doit = mtk_cfg80211_vendor_set_roaming_policy
++		.doit = mtk_cfg80211_vendor_set_roaming_policy,
++		/* pennyos: 5.3+ refuses vendor commands without a policy */
++		.policy = VENDOR_CMD_RAW_DATA
+ 	},
+ 	/* Get Supported Feature Set */
+ 	{
+@@ -484,7 +538,9 @@ static const struct wiphy_vendor_command mtk_wlan_vendor_ops[] = {
+ 		},
+ 		.flags = WIPHY_VENDOR_CMD_NEED_WDEV |
+ 				WIPHY_VENDOR_CMD_NEED_NETDEV,
+-		.doit = mtk_cfg80211_vendor_get_supported_feature_set
++		.doit = mtk_cfg80211_vendor_get_supported_feature_set,
++		/* pennyos: 5.3+ refuses vendor commands without a policy */
++		.policy = VENDOR_CMD_RAW_DATA
+ 	},
+ 	/* Get Driver Version or Firmware Version */
+ 	{
+@@ -494,7 +550,9 @@ static const struct wiphy_vendor_command mtk_wlan_vendor_ops[] = {
+ 		},
+ 		.flags = WIPHY_VENDOR_CMD_NEED_WDEV |
+ 				WIPHY_VENDOR_CMD_NEED_NETDEV,
+-		.doit = mtk_cfg80211_vendor_get_version
++		.doit = mtk_cfg80211_vendor_get_version,
++		/* pennyos: 5.3+ refuses vendor commands without a policy */
++		.policy = VENDOR_CMD_RAW_DATA
+ 	},
+ 	/* Set Tx Power Scenario */
+ 	{
+@@ -504,7 +562,9 @@ static const struct wiphy_vendor_command mtk_wlan_vendor_ops[] = {
+ 		},
+ 		.flags = WIPHY_VENDOR_CMD_NEED_WDEV |
+ 				WIPHY_VENDOR_CMD_NEED_NETDEV,
+-		.doit = mtk_cfg80211_vendor_set_tx_power_scenario
++		.doit = mtk_cfg80211_vendor_set_tx_power_scenario,
++		/* pennyos: 5.3+ refuses vendor commands without a policy */
++		.policy = VENDOR_CMD_RAW_DATA
+ 	},
+ };
+ 
+@@ -632,7 +692,7 @@ unsigned int _cfg80211_classify8021d(struct sk_buff *skb)
+ #endif
+ 
+ UINT_16 wlanSelectQueue(struct net_device *dev, struct sk_buff *skb,
+-			void *accel_priv, select_queue_fallback_t fallback)
++			struct net_device *sb_dev)
+ {
+ 	UINT_16 au16Wlan1dToQueueIdx[8] = { 1, 0, 0, 1, 2, 2, 3, 3 };
+ 
+@@ -676,10 +736,11 @@ static int wlanSetMacAddress(struct net_device *ndev, void *addr)
+ 	 **********************************************************************
+ 	 */
+ 	wdev = ndev->ieee80211_ptr;
+-	if (wdev->ssid_len > 0 || (wdev->current_bss)) {
++	/* pennyos: 6.0+ moved these into wdev->u.client / wdev->links[] */
++	if (wdev->u.client.ssid_len > 0 || (wdev->links[0].client.current_bss)) {
+ 		DBGLOG(INIT, ERROR,
+ 		       "Reject mac addr change due to ssid_len(%d) & bss(%d)\n",
+-		       wdev->ssid_len, wdev->current_bss);
++		       wdev->u.client.ssid_len, wdev->links[0].client.current_bss ? 1 : 0);
+ 		return WLAN_STATUS_NOT_ACCEPTED;
+ 	}
+ 
+@@ -695,7 +756,8 @@ static int wlanSetMacAddress(struct net_device *ndev, void *addr)
+ 	prAdapter = prGlueInfo->prAdapter;
+ 
+ 	COPY_MAC_ADDR(prAdapter->prAisBssInfo->aucOwnMacAddr, sa->sa_data);
+-	COPY_MAC_ADDR(prGlueInfo->prDevHandler->dev_addr, sa->sa_data);
++	/* pennyos: net_device->dev_addr is const since 5.17 */
++	eth_hw_addr_set(prGlueInfo->prDevHandler, sa->sa_data);
+ 	DBGLOG(INIT, INFO, "Set connect random mac addr to " MACSTR ".\n",
+ 	       MAC2STR(prAdapter->prAisBssInfo->aucOwnMacAddr));
+ 
+@@ -954,6 +1016,15 @@ int wlanDoIOCTL(struct net_device *prDev, struct ifreq *prIfReq, int i4Cmd)
+ 	return ret;
+ }				/* end of wlanDoIOCTL() */
+ 
++/* pennyos: since 5.15 SIOCDEVPRIVATE..SIOCDEVPRIVATE+15 are delivered through
++ * .ndo_siocdevprivate instead of .ndo_do_ioctl.  Forward to the vendor entry
++ * point (which reads prIfReq->ifr_data itself; native 64-bit callers only).
++ */
++static int wlanSiocDevPrivate(struct net_device *prDev, struct ifreq *prIfReq, void __user *prData, int i4Cmd)
++{
++	return wlanDoIOCTL(prDev, prIfReq, i4Cmd);
++}
++
+ /*----------------------------------------------------------------------------*/
+ /*!
+ * \brief Export wlan GLUE_INFO_T pointer to p2p module
+@@ -1567,6 +1638,7 @@ static const struct net_device_ops wlan_netdev_ops = {
+ 	.ndo_set_rx_mode = wlanSetMulticastList,
+ 	.ndo_get_stats = wlanGetStats,
+ 	.ndo_do_ioctl = wlanDoIOCTL,
++	.ndo_siocdevprivate = wlanSiocDevPrivate,
+ 	.ndo_start_xmit = wlanHardStartXmit,
+ 	.ndo_init = wlanInit,
+ 	.ndo_uninit = wlanUninit,
+@@ -2304,16 +2376,24 @@ static INT_32 wlanProbe(PVOID pvData)
+ 		/* TODO the change schedule API shall be provided by OS glue layer */
+ 		/* Switch the Wi-Fi task priority to higher priority and change the scheduling method */
+ 		if (prGlueInfo->prAdapter->rWifiVar.ucThreadPriority > 0) {
+-			struct sched_param param = {.sched_priority = prGlueInfo->prAdapter->rWifiVar.ucThreadPriority
+-			};
+-			sched_setscheduler(prGlueInfo->main_thread,
+-					   prGlueInfo->prAdapter->rWifiVar.ucThreadScheduling, &param);
++			/* pennyos: sched_setscheduler() is not available to modules
++			 * since 5.9.  The only equivalent is sched_set_fifo(), which
++			 * uses a fixed priority (MAX_RT_PRIO / 2) instead of the
++			 * configured "ThreadPriority".  Used for the real-time
++			 * policies (SCHED_FIFO / SCHED_RR); for any other
++			 * "ThreadSched" value the threads keep their policy.
++			 */
++			if (prGlueInfo->prAdapter->rWifiVar.ucThreadScheduling == SCHED_FIFO ||
++			    prGlueInfo->prAdapter->rWifiVar.ucThreadScheduling == SCHED_RR) {
++				sched_set_fifo(prGlueInfo->main_thread);
+ #if CFG_SUPPORT_MULTITHREAD
+-			sched_setscheduler(prGlueInfo->hif_thread,
+-					   prGlueInfo->prAdapter->rWifiVar.ucThreadScheduling, &param);
+-			sched_setscheduler(prGlueInfo->rx_thread,
+-					   prGlueInfo->prAdapter->rWifiVar.ucThreadScheduling, &param);
++				sched_set_fifo(prGlueInfo->hif_thread);
++				sched_set_fifo(prGlueInfo->rx_thread);
+ #endif
++			} else
++				pr_info_once("wlan: ThreadPriority=%d with ThreadSched=%d not applied on this kernel\n",
++					     prGlueInfo->prAdapter->rWifiVar.ucThreadPriority,
++					     prGlueInfo->prAdapter->rWifiVar.ucThreadScheduling);
+ 			DBGLOG(INIT, INFO,
+ 			       "Set pri = %d, sched = %d\n",
+ 			       prGlueInfo->prAdapter->rWifiVar.ucThreadPriority,
+@@ -2340,7 +2420,8 @@ static INT_32 wlanProbe(PVOID pvData)
+ 				DBGLOG(INIT, WARN, "set MAC addr fail 0x%x\n", rStatus);
+ 				prGlueInfo->u4ReadyFlag = 0;
+ 			} else {
+-				ether_addr_copy(prGlueInfo->prDevHandler->dev_addr, MacAddr.sa_data);
++				/* pennyos: net_device->dev_addr is const since 5.17 */
++				eth_hw_addr_set(prGlueInfo->prDevHandler, MacAddr.sa_data);
+ 				ether_addr_copy(prGlueInfo->prDevHandler->perm_addr,
+ 				       prGlueInfo->prDevHandler->dev_addr);
+ 
+diff --git a/connectivity/wlan/core/gen3/os/linux/gl_kal.c b/connectivity/wlan/core/gen3/os/linux/gl_kal.c
+index 59fa818..316c567 100644
+--- a/connectivity/wlan/core/gen3/os/linux/gl_kal.c
++++ b/connectivity/wlan/core/gen3/os/linux/gl_kal.c
+@@ -640,7 +640,8 @@ VOID kalUpdateMACAddress(IN P_GLUE_INFO_T prGlueInfo, IN PUINT_8 pucMacAddr)
+ 	ASSERT(pucMacAddr);
+ 
+ 	if (UNEQUAL_MAC_ADDR(prGlueInfo->prDevHandler->dev_addr, pucMacAddr))
+-		memcpy(prGlueInfo->prDevHandler->dev_addr, pucMacAddr, PARAM_MAC_ADDR_LEN);
++		/* pennyos: net_device->dev_addr is const since 5.17 */
++		eth_hw_addr_set(prGlueInfo->prDevHandler, pucMacAddr);
+ 
+ }
+ 
+@@ -1138,7 +1139,8 @@ kalIndicateStatusAndComplete(IN P_GLUE_INFO_T prGlueInfo, IN WLAN_STATUS eStatus
+ 			/* CFG80211 Indication */
+ 			if (eStatus == WLAN_STATUS_ROAM_OUT_FIND_BEST) {
+ #if (LINUX_VERSION_CODE >= KERNEL_VERSION(4, 12, 0))
+-				rRoamInfo.bss = bss;
++				/* pennyos: per-link since 6.0; non-MLO uses links[0] */
++				rRoamInfo.links[0].bss = bss;
+ 				rRoamInfo.req_ie = prGlueInfo->aucReqIe;
+ 				rRoamInfo.req_ie_len = prGlueInfo->u4ReqIeLength;
+ 				rRoamInfo.resp_ie = prGlueInfo->aucRspIe;
+@@ -3473,9 +3475,8 @@ VOID kalOsTimerInitialize(IN P_GLUE_INFO_T prGlueInfo, IN PVOID prTimerHandler)
+ 
+ 	ASSERT(prGlueInfo);
+ 
+-	init_timer(&(prGlueInfo->tickfn));
+-	prGlueInfo->tickfn.function = prTimerHandler;
+-	prGlueInfo->tickfn.data = (unsigned long)prGlueInfo;
++	/* pennyos: timer_setup(); the handler gets the timer_list (4.15+) */
++	timer_setup(&(prGlueInfo->tickfn), prTimerHandler, 0);
+ }
+ 
+ /* Todo */
+@@ -3574,10 +3575,10 @@ UINT_32 kalRandomNumber(VOID)
+  * \retval (none)
+  */
+ /*----------------------------------------------------------------------------*/
+-VOID kalTimeoutHandler(unsigned long arg)
++VOID kalTimeoutHandler(struct timer_list *prTimer)
+ {
+ 
+-	P_GLUE_INFO_T prGlueInfo = (P_GLUE_INFO_T) arg;
++	P_GLUE_INFO_T prGlueInfo = from_timer(prGlueInfo, prTimer, tickfn);
+ 
+ 	ASSERT(prGlueInfo);
+ 
+@@ -4049,7 +4050,8 @@ UINT_32 kalFileRead(struct file *file, unsigned long long offset, unsigned char
+ 	oldfs = get_fs();
+ 	set_fs(get_ds());
+ 
+-	ret = vfs_read(file, data, size, &offset);
++	/* pennyos: kernel buffer -> kernel_read() */
++	ret = kernel_read(file, data, size, &offset);
+ 
+ 	set_fs(oldfs);
+ 	return ret;
+@@ -4063,7 +4065,8 @@ UINT_32 kalFileWrite(struct file *file, unsigned long long offset, unsigned char
+ 	oldfs = get_fs();
+ 	set_fs(get_ds());
+ 
+-	ret = vfs_write(file, data, size, &offset);
++	/* pennyos: kernel buffer -> kernel_write() */
++	ret = kernel_write(file, data, size, &offset);
+ 
+ 	set_fs(oldfs);
+ 	return ret;
+@@ -4825,8 +4828,11 @@ BOOLEAN kalMetCheckProfilingPacket(IN P_GLUE_INFO_T prGlueInfo, IN P_NATIVE_PACK
+ static unsigned long __read_mostly tracing_mark_write_addr;
+ static inline void __mt_update_tracing_mark_write_addr(void)
+ {
++	/* pennyos: kallsyms_lookup_name() is not exported to modules since 5.7;
++	 * the MET trace marker address stays 0 (only used with CONFIG_TRACING).
++	 */
+ 	if (unlikely(tracing_mark_write_addr == 0))
+-		tracing_mark_write_addr = kallsyms_lookup_name("tracing_mark_write");
++		pr_info_once("wlan: MET packet trace: cannot look up \"tracing_mark_write\" on this kernel\n");
+ }
+ 
+ VOID kalMetTagPacket(IN P_GLUE_INFO_T prGlueInfo, IN P_NATIVE_PACKET prPacket, IN ENUM_TX_PROFILING_TAG_T eTag)
+@@ -4972,12 +4978,12 @@ const struct file_operations rMetProcFops = {
+ .write = kalMetWriteProcfs
+ };
+ #endif
+-const struct file_operations rMetProcCtrlFops = {
+-.write = kalMetCtrlWriteProcfs
++const struct proc_ops rMetProcCtrlFops = {
++.proc_write = kalMetCtrlWriteProcfs
+ };
+ 
+-const struct file_operations rMetProcPortFops = {
+-.write = kalMetPortWriteProcfs
++const struct proc_ops rMetProcPortFops = {
++.proc_write = kalMetPortWriteProcfs
+ };
+ 
+ int kalMetInitProcfs(IN P_GLUE_INFO_T prGlueInfo)
+diff --git a/connectivity/wlan/core/gen3/os/linux/gl_p2p.c b/connectivity/wlan/core/gen3/os/linux/gl_p2p.c
+index dbc3d21..bc71550 100644
+--- a/connectivity/wlan/core/gen3/os/linux/gl_p2p.c
++++ b/connectivity/wlan/core/gen3/os/linux/gl_p2p.c
+@@ -74,6 +74,17 @@ static struct net_device *g_P2pPrDev;
+ static struct wireless_dev *gprP2pWdev;
+ 
+ #if CFG_ENABLE_WIFI_DIRECT_CFG_80211
++/* pennyos: see mtk_cfg80211_update_mgmt_frame_registrations() in gl_init.c */
++static void mtk_p2p_cfg80211_update_mgmt_frame_registrations(struct wiphy *wiphy,
++							     struct wireless_dev *wdev,
++							     struct mgmt_frame_regs *upd)
++{
++	mtk_p2p_cfg80211_mgmt_frame_register(wiphy, wdev, MAC_FRAME_PROBE_REQ,
++		!!(upd->interface_stypes & BIT(IEEE80211_STYPE_PROBE_REQ >> 4)));
++	mtk_p2p_cfg80211_mgmt_frame_register(wiphy, wdev, MAC_FRAME_ACTION,
++		!!(upd->interface_stypes & BIT(IEEE80211_STYPE_ACTION >> 4)));
++}
++
+ static struct cfg80211_ops mtk_p2p_ops = {
+ 	/*.add_virtual_intf = mtk_p2p_cfg80211_add_iface,*/
+ 	.change_virtual_intf = mtk_p2p_cfg80211_change_iface,	/* 1 st */
+@@ -94,7 +105,7 @@ static struct cfg80211_ops mtk_p2p_ops = {
+ 	.set_wiphy_params = mtk_p2p_cfg80211_set_wiphy_params,
+ 	.del_station = mtk_p2p_cfg80211_del_station,
+ 	.set_bitrate_mask = mtk_p2p_cfg80211_set_bitrate_mask,
+-	.mgmt_frame_register = mtk_p2p_cfg80211_mgmt_frame_register,
++	.update_mgmt_frame_registrations = mtk_p2p_cfg80211_update_mgmt_frame_registrations,
+ 	.get_station = mtk_p2p_cfg80211_get_station,
+ 	.add_key = mtk_p2p_cfg80211_add_key,
+ 	.get_key = mtk_p2p_cfg80211_get_key,
+@@ -117,7 +128,9 @@ static const struct wiphy_vendor_command mtk_p2p_vendor_ops[] = {
+ 			.subcmd = WIFI_SUBCMD_GET_CHANNEL_LIST
+ 		},
+ 		.flags = WIPHY_VENDOR_CMD_NEED_WDEV | WIPHY_VENDOR_CMD_NEED_NETDEV,
+-		.doit = mtk_cfg80211_vendor_get_channel_list
++		.doit = mtk_cfg80211_vendor_get_channel_list,
++		/* pennyos: 5.3+ refuses vendor commands without a policy */
++		.policy = VENDOR_CMD_RAW_DATA
+ 	},
+ 	{
+ 		{
+@@ -125,7 +138,9 @@ static const struct wiphy_vendor_command mtk_p2p_vendor_ops[] = {
+ 			.subcmd = WIFI_SUBCMD_SET_COUNTRY_CODE
+ 		},
+ 		.flags = WIPHY_VENDOR_CMD_NEED_WDEV | WIPHY_VENDOR_CMD_NEED_NETDEV,
+-		.doit = mtk_cfg80211_vendor_set_country_code
++		.doit = mtk_cfg80211_vendor_set_country_code,
++		/* pennyos: 5.3+ refuses vendor commands without a policy */
++		.policy = VENDOR_CMD_RAW_DATA
+ 	},
+ };
+ 
+@@ -338,6 +353,7 @@ static int p2pHardStartXmit(IN struct sk_buff *prSkb, IN struct net_device *prDe
+ static int p2pSetMACAddress(IN struct net_device *prDev, void *addr);
+ 
+ static int p2pDoIOCTL(struct net_device *prDev, struct ifreq *prIfReq, int i4Cmd);
++static int p2pSiocDevPrivate(struct net_device *prDev, struct ifreq *prIfReq, void __user *prData, int i4Cmd);
+ 
+ #if 0
+ 
+@@ -420,6 +436,7 @@ const struct net_device_ops p2p_netdev_ops = {
+ 	.ndo_set_rx_mode = p2pSetMulticastList,
+ 	.ndo_get_stats = p2pGetStats,
+ 	.ndo_do_ioctl = p2pDoIOCTL,
++	.ndo_siocdevprivate = p2pSiocDevPrivate,
+ 	.ndo_start_xmit = p2pHardStartXmit,
+ 	/* .ndo_select_queue       = p2pSelectQueue, */
+ 	.ndo_select_queue = wlanSelectQueue,
+@@ -764,7 +781,8 @@ BOOLEAN glRegisterP2P(P_GLUE_INFO_T prGlueInfo, const char *prDevName, BOOLEAN f
+ 	/* 4.2 fill hardware address */
+ 	COPY_MAC_ADDR(rMacAddr, prAdapter->rMyMacAddr);
+ 	rMacAddr[0] ^= 0x2;	/* change to local administrated address */
+-	ether_addr_copy(prGlueInfo->prP2PInfo->prDevHandler->dev_addr, rMacAddr);
++	/* pennyos: net_device->dev_addr is const since 5.17 */
++	eth_hw_addr_set(prGlueInfo->prP2PInfo->prDevHandler, rMacAddr);
+ 	ether_addr_copy(prGlueInfo->prP2PInfo->prDevHandler->perm_addr, prGlueInfo->prP2PInfo->prDevHandler->dev_addr);
+ 
+ 	/* 4.3 register callback functions */
+@@ -1450,6 +1468,12 @@ int p2pDoIOCTL(struct net_device *prDev, struct ifreq *prIfReq, int i4Cmd)
+ 	return ret;
+ }				/* end of p2pDoIOCTL() */
+ 
++/* pennyos: see wlanSiocDevPrivate() in gl_init.c */
++static int p2pSiocDevPrivate(struct net_device *prDev, struct ifreq *prIfReq, void __user *prData, int i4Cmd)
++{
++	return p2pDoIOCTL(prDev, prIfReq, i4Cmd);
++}
++
+ /*----------------------------------------------------------------------------*/
+ /*!
+  * \brief To override p2p interface address
+diff --git a/connectivity/wlan/core/gen3/os/linux/gl_p2p_cfg80211.c b/connectivity/wlan/core/gen3/os/linux/gl_p2p_cfg80211.c
+index 794bfe8..994ebb6 100644
+--- a/connectivity/wlan/core/gen3/os/linux/gl_p2p_cfg80211.c
++++ b/connectivity/wlan/core/gen3/os/linux/gl_p2p_cfg80211.c
+@@ -242,7 +242,7 @@ int mtk_p2p_cfg80211_del_iface(struct wiphy *wiphy,
+ }				/* mtk_p2p_cfg80211_del_iface */
+ 
+ int mtk_p2p_cfg80211_add_key(struct wiphy *wiphy,
+-			     struct net_device *ndev,
++			     struct net_device *ndev, int link_id,
+ 			     u8 key_index, bool pairwise, const u8 *mac_addr, struct key_params *params)
+ {
+ 	P_GLUE_INFO_T prGlueInfo = NULL;
+@@ -318,7 +318,7 @@ int mtk_p2p_cfg80211_add_key(struct wiphy *wiphy,
+ }
+ 
+ int mtk_p2p_cfg80211_get_key(struct wiphy *wiphy,
+-			     struct net_device *ndev,
++			     struct net_device *ndev, int link_id,
+ 			     u8 key_index,
+ 			     bool pairwise,
+ 			     const u8 *mac_addr, void *cookie, void (*callback) (void *cookie, struct key_params *))
+@@ -335,7 +335,7 @@ int mtk_p2p_cfg80211_get_key(struct wiphy *wiphy,
+ }
+ 
+ int mtk_p2p_cfg80211_del_key(struct wiphy *wiphy,
+-			     struct net_device *ndev, u8 key_index, bool pairwise, const u8 *mac_addr)
++			     struct net_device *ndev, int link_id, u8 key_index, bool pairwise, const u8 *mac_addr)
+ {
+ 	P_GLUE_INFO_T prGlueInfo = NULL;
+ 	PARAM_REMOVE_KEY_T rRemoveKey;
+@@ -381,7 +381,7 @@ int mtk_p2p_cfg80211_del_key(struct wiphy *wiphy,
+ 
+ int
+ mtk_p2p_cfg80211_set_default_key(struct wiphy *wiphy,
+-				 struct net_device *netdev, u8 key_index, bool unicast, bool multicast)
++				 struct net_device *netdev, int link_id, u8 key_index, bool unicast, bool multicast)
+ {
+ 	P_GLUE_INFO_T prGlueInfo = NULL;
+ 	/* PARAM_DEFAULT_KEY_T rDefaultKey; */
+@@ -937,7 +937,7 @@ int mtk_p2p_cfg80211_change_beacon(struct wiphy *wiphy, struct net_device *dev,
+ }				/* mtk_p2p_cfg80211_change_beacon */
+ 
+ 
+-int mtk_p2p_cfg80211_stop_ap(struct wiphy *wiphy, struct net_device *dev)
++int mtk_p2p_cfg80211_stop_ap(struct wiphy *wiphy, struct net_device *dev, unsigned int link_id)
+ {
+ 	P_GLUE_INFO_T prGlueInfo = (P_GLUE_INFO_T) NULL;
+ 	INT_32 i4Rslt = -EINVAL;
+@@ -1374,7 +1374,8 @@ int mtk_p2p_cfg80211_connect(struct wiphy *wiphy, struct net_device *dev, struct
+ 		ASSERT_BREAK((prGlueInfo != NULL) && (prNetDevPrivate != NULL));
+ 		prP2pBssInfo = GET_BSS_INFO_BY_INDEX(prGlueInfo->prAdapter, prNetDevPrivate->ucBssIdx);
+ 
+-		if (wdev->current_bss && (prP2pBssInfo->eConnectionState == PARAM_MEDIA_STATE_DISCONNECTED)) {
++		/* pennyos: 6.0+: wdev->links[0].client.current_bss */
++		if (wdev->links[0].client.current_bss && (prP2pBssInfo->eConnectionState == PARAM_MEDIA_STATE_DISCONNECTED)) {
+ 			DBGLOG(P2P, WARN, "Reject this connecting request\n");
+ 			return -EALREADY;
+ 		}
+@@ -1597,7 +1598,7 @@ int mtk_p2p_cfg80211_set_channel(IN struct wiphy *wiphy,
+ int
+ mtk_p2p_cfg80211_set_bitrate_mask(IN struct wiphy *wiphy,
+ 				  IN struct net_device *dev,
+-				  IN const u8 *peer, IN const struct cfg80211_bitrate_mask *mask)
++				  IN unsigned int link_id, IN const u8 *peer, IN const struct cfg80211_bitrate_mask *mask)
+ {
+ 	INT_32 i4Rslt = -EINVAL;
+ 	P_GLUE_INFO_T prGlueInfo = (P_GLUE_INFO_T) NULL;
+diff --git a/connectivity/wlan/core/gen3/os/linux/gl_proc.c b/connectivity/wlan/core/gen3/os/linux/gl_proc.c
+index 03165ac..888fdb5 100644
+--- a/connectivity/wlan/core/gen3/os/linux/gl_proc.c
++++ b/connectivity/wlan/core/gen3/os/linux/gl_proc.c
+@@ -204,10 +204,9 @@ static ssize_t procDbgLevelWrite(struct file *file, const char __user *buffer, s
+ }
+ 
+ 
+-static const struct file_operations dbglevel_ops = {
+-	.owner = THIS_MODULE,
+-	.read = procDbgLevelRead,
+-	.write = procDbgLevelWrite,
++static const struct proc_ops dbglevel_ops = {
++	.proc_read = procDbgLevelRead,
++	.proc_write = procDbgLevelWrite,
+ };
+ 
+ static ssize_t procPktDelayDbgCfgRead(struct file *filp, char __user *buf, size_t count, loff_t *f_pos)
+@@ -322,10 +321,9 @@ static ssize_t procPktDelayDbgCfgWrite(struct file *file, const char __user *buf
+ 	return count;
+ }
+ 
+-static const struct file_operations proc_pkt_delay_dbg_ops = {
+-	.owner = THIS_MODULE,
+-	.read  = procPktDelayDbgCfgRead,
+-	.write = procPktDelayDbgCfgWrite,
++static const struct proc_ops proc_pkt_delay_dbg_ops = {
++	.proc_read  = procPktDelayDbgCfgRead,
++	.proc_write = procPktDelayDbgCfgWrite,
+ };
+ 
+ static ssize_t procSetCamCfgWrite(struct file *file, const char __user *buffer, size_t count, loff_t *data)
+@@ -378,9 +376,8 @@ static ssize_t procSetCamCfgWrite(struct file *file, const char __user *buffer,
+ 	return count;
+ }
+ 
+-static const struct file_operations proc_set_cam_ops = {
+-	.owner = THIS_MODULE,
+-	.write = procSetCamCfgWrite,
++static const struct proc_ops proc_set_cam_ops = {
++	.proc_write = procSetCamCfgWrite,
+ };
+ 
+ /*******************************************************************************
+@@ -504,10 +501,9 @@ static ssize_t procMCRWrite(struct file *file, const char __user *buffer,
+ 
+ }				/* end of procMCRWrite() */
+ 
+-static const struct file_operations mcr_ops = {
+-	.owner = THIS_MODULE,
+-	.read = procMCRRead,
+-	.write = procMCRWrite,
++static const struct proc_ops mcr_ops = {
++	.proc_read = procMCRRead,
++	.proc_write = procMCRWrite,
+ };
+ 
+ #if CFG_SUPPORT_DEBUG_FS
+@@ -571,10 +567,9 @@ static ssize_t procRoamWrite(struct file *file, const char __user *buffer,
+ 	return count;
+ }
+ 
+-static const struct file_operations roam_ops = {
+-	.owner = THIS_MODULE,
+-	.read = procRoamRead,
+-	.write = procRoamWrite,
++static const struct proc_ops roam_ops = {
++	.proc_read = procRoamRead,
++	.proc_write = procRoamWrite,
+ };
+ 
+ static ssize_t procCountryRead(struct file *filp, char __user *buf, size_t count, loff_t *f_pos)
+@@ -635,10 +630,9 @@ static ssize_t procCountryWrite(struct file *file, const char __user *buffer,
+ 	return count;
+ }
+ 
+-static const struct file_operations country_ops = {
+-	.owner = THIS_MODULE,
+-	.read = procCountryRead,
+-	.write = procCountryWrite,
++static const struct proc_ops country_ops = {
++	.proc_read = procCountryRead,
++	.proc_write = procCountryWrite,
+ };
+ #endif
+ 
+@@ -717,10 +711,9 @@ static ssize_t procWifiCfgWrite(struct file *file, const char __user *buffer, si
+ 	return count;
+ }
+ 
+-static const struct file_operations wifi_cfg_ops = {
+-	.owner = THIS_MODULE,
+-	.read = procWifiCfgRead,
+-	.write = procWifiCfgWrite,
++static const struct proc_ops wifi_cfg_ops = {
++	.proc_read = procWifiCfgRead,
++	.proc_write = procWifiCfgWrite,
+ };
+ #endif
+ static ssize_t procAutoPerfCfgRead(struct file *filp, char __user *buf, size_t count, loff_t *f_pos)
+@@ -796,10 +789,9 @@ static ssize_t procAutoPerfCfgWrite(struct file *file, const char *buffer, size_
+ 	return -EFAULT;
+ }
+ 
+-static const struct file_operations auto_perf_ops = {
+-	.owner = THIS_MODULE,
+-	.read = procAutoPerfCfgRead,
+-	.write = procAutoPerfCfgWrite,
++static const struct proc_ops auto_perf_ops = {
++	.proc_read = procAutoPerfCfgRead,
++	.proc_write = procAutoPerfCfgWrite,
+ };
+ 
+ VOID glWriteStatus(PPUINT_8 ppucWrPos, PUINT_32 pu4RemainLen, PUINT_8 pucFwt, ...)
+@@ -1092,10 +1084,9 @@ static ssize_t procDrvStatusCfg(struct file *file, const char *buffer, size_t co
+ 	return -EINVAL;
+ }
+ 
+-static const struct file_operations drv_status_ops = {
+-	.owner = THIS_MODULE,
+-	.read = procReadDrvStatus,
+-	.write = procDrvStatusCfg,
++static const struct proc_ops drv_status_ops = {
++	.proc_read = procReadDrvStatus,
++	.proc_write = procDrvStatusCfg,
+ };
+ 
+ INT_32 procInitFs(VOID)
+@@ -1557,10 +1548,9 @@ static ssize_t cfgWrite(struct file *filp, const char __user *buf, size_t count,
+ 	return count;
+ }
+ 
+-static const struct file_operations cfg_ops = {
+-	.owner = THIS_MODULE,
+-	.read = cfgRead,
+-	.write = cfgWrite,
++static const struct proc_ops cfg_ops = {
++	.proc_read = cfgRead,
++	.proc_write = cfgWrite,
+ };
+ 
+ INT_32 cfgRemoveProcEntry(void)
+diff --git a/connectivity/wlan/core/gen3/os/linux/gl_wext_priv.c b/connectivity/wlan/core/gen3/os/linux/gl_wext_priv.c
+index 0ae325c..a358e2a 100644
+--- a/connectivity/wlan/core/gen3/os/linux/gl_wext_priv.c
++++ b/connectivity/wlan/core/gen3/os/linux/gl_wext_priv.c
+@@ -1967,7 +1967,7 @@ priv_set_driver(IN struct net_device *prNetDev,
+ 
+ 	ASSERT(IW_IS_GET(u2Cmd));
+ 	if (prIwReqData->data.length != 0) {
+-		if (!access_ok(VERIFY_READ, prIwReqData->data.pointer, prIwReqData->data.length)) {
++		if (!access_ok(prIwReqData->data.pointer, prIwReqData->data.length)) {
+ 			DBGLOG(REQ, INFO, "%s access_ok Read fail written = %d\n", __func__, i4BytesWritten);
+ 			return -EFAULT;
+ 		}
+@@ -2002,7 +2002,7 @@ priv_set_driver(IN struct net_device *prNetDev,
+ 	/* trick,hack in ./net/wireless/wext-priv.c ioctl_private_iw_point */
+ 	/* because the cmd number is even (set), the return string will not be copy_to_user */
+ 	ASSERT(IW_IS_SET(u2Cmd));
+-	if (!access_ok(VERIFY_WRITE, prIwReqData->data.pointer, i4BytesWritten)) {
++	if (!access_ok(prIwReqData->data.pointer, i4BytesWritten)) {
+ 		DBGLOG(REQ, INFO, "%s access_ok Write fail written = %d\n", __func__, i4BytesWritten);
+ 		return -EFAULT;
+ 	}
+diff --git a/connectivity/wlan/core/gen3/os/linux/include/gl_cfg80211.h b/connectivity/wlan/core/gen3/os/linux/include/gl_cfg80211.h
+index e76c3fb..5171b30 100644
+--- a/connectivity/wlan/core/gen3/os/linux/include/gl_cfg80211.h
++++ b/connectivity/wlan/core/gen3/os/linux/include/gl_cfg80211.h
+@@ -192,21 +192,21 @@ mtk_cfg80211_change_iface(struct wiphy *wiphy,
+ 
+ int
+ mtk_cfg80211_add_key(struct wiphy *wiphy,
+-		     struct net_device *ndev,
++		     struct net_device *ndev, int link_id,
+ 		     u8 key_index, bool pairwise, const u8 *mac_addr, struct key_params *params);
+ 
+ int
+ mtk_cfg80211_get_key(struct wiphy *wiphy,
+-		     struct net_device *ndev,
++		     struct net_device *ndev, int link_id,
+ 		     u8 key_index,
+ 		     bool pairwise,
+ 		     const u8 *mac_addr, void *cookie, void (*callback) (void *cookie, struct key_params *));
+ 
+ int
+-mtk_cfg80211_del_key(struct wiphy *wiphy, struct net_device *ndev, u8 key_index, bool pairwise, const u8 *mac_addr);
++mtk_cfg80211_del_key(struct wiphy *wiphy, struct net_device *ndev, int link_id, u8 key_index, bool pairwise, const u8 *mac_addr);
+ 
+ int
+-mtk_cfg80211_set_default_key(struct wiphy *wiphy, struct net_device *ndev, u8 key_index, bool unicast, bool multicast);
++mtk_cfg80211_set_default_key(struct wiphy *wiphy, struct net_device *ndev, int link_id, u8 key_index, bool unicast, bool multicast);
+ 
+ int mtk_cfg80211_get_station(struct wiphy *wiphy, struct net_device *ndev, const u8 *mac, struct station_info *sinfo);
+ 
+@@ -312,7 +312,7 @@ int mtk_cfg80211_del_station(struct wiphy *wiphy, struct net_device *ndev, const
+ #endif
+ 
+ int
+-mtk_cfg80211_tdls_mgmt(struct wiphy *wiphy, struct net_device *dev, const u8 *peer, u8 action_code, u8 dialog_token,
++mtk_cfg80211_tdls_mgmt(struct wiphy *wiphy, struct net_device *dev, const u8 *peer, int link_id, u8 action_code, u8 dialog_token,
+ 		u16 status_code, u32 peer_capability, bool initiator, const u8 *buf, size_t len);
+ 
+ int mtk_cfg80211_tdls_oper(struct wiphy *wiphy, struct net_device *dev, const u8 *peer,
+diff --git a/connectivity/wlan/core/gen3/os/linux/include/gl_kal.h b/connectivity/wlan/core/gen3/os/linux/include/gl_kal.h
+index 88e104e..7ab8a49 100644
+--- a/connectivity/wlan/core/gen3/os/linux/include/gl_kal.h
++++ b/connectivity/wlan/core/gen3/os/linux/include/gl_kal.h
+@@ -951,7 +951,7 @@ VOID kalScanDone(IN P_GLUE_INFO_T prGlueInfo, IN ENUM_KAL_NETWORK_TYPE_INDEX_T e
+ 
+ UINT_32 kalRandomNumber(VOID);
+ 
+-VOID kalTimeoutHandler(unsigned long arg);
++VOID kalTimeoutHandler(struct timer_list *prTimer);
+ 
+ VOID kalSetEvent(P_GLUE_INFO_T pr);
+ 
+diff --git a/connectivity/wlan/core/gen3/os/linux/include/gl_os.h b/connectivity/wlan/core/gen3/os/linux/include/gl_os.h
+index 148c9e7..7d93e76 100644
+--- a/connectivity/wlan/core/gen3/os/linux/include/gl_os.h
++++ b/connectivity/wlan/core/gen3/os/linux/include/gl_os.h
+@@ -953,7 +953,7 @@ BOOLEAN glUnregisterAmpc(P_GLUE_INFO_T prGlueInfo);
+ P_GLUE_INFO_T wlanGetGlueInfo(VOID);
+ 
+ UINT_16 wlanSelectQueue(struct net_device *dev, struct sk_buff *skb,
+-			void *accel_priv, select_queue_fallback_t fallback);
++			struct net_device *sb_dev);
+ 
+ VOID wlanDebugInit(VOID);
+ 
+diff --git a/connectivity/wlan/core/gen3/os/linux/include/gl_p2p_ioctl.h b/connectivity/wlan/core/gen3/os/linux/include/gl_p2p_ioctl.h
+index 1472a29..c59e6fe 100644
+--- a/connectivity/wlan/core/gen3/os/linux/include/gl_p2p_ioctl.h
++++ b/connectivity/wlan/core/gen3/os/linux/include/gl_p2p_ioctl.h
+@@ -327,23 +327,23 @@ int mtk_p2p_cfg80211_del_iface(struct wiphy *wiphy,
+ 
+ int
+ mtk_p2p_cfg80211_add_key(struct wiphy *wiphy,
+-			 struct net_device *ndev,
++			 struct net_device *ndev, int link_id,
+ 			 u8 key_index, bool pairwise, const u8 *mac_addr, struct key_params *params);
+ 
+ int
+ mtk_p2p_cfg80211_get_key(struct wiphy *wiphy,
+-			 struct net_device *ndev,
++			 struct net_device *ndev, int link_id,
+ 			 u8 key_index,
+ 			 bool pairwise,
+ 			 const u8 *mac_addr, void *cookie, void (*callback) (void *cookie, struct key_params *));
+ 
+ int
+ mtk_p2p_cfg80211_del_key(struct wiphy *wiphy,
+-			 struct net_device *ndev, u8 key_index, bool pairwise, const u8 *mac_addr);
++			 struct net_device *ndev, int link_id, u8 key_index, bool pairwise, const u8 *mac_addr);
+ 
+ int
+ mtk_p2p_cfg80211_set_default_key(struct wiphy *wiphy,
+-				 struct net_device *netdev, u8 key_index, bool unicast, bool multicast);
++				 struct net_device *netdev, int link_id, u8 key_index, bool unicast, bool multicast);
+ 
+ int mtk_p2p_cfg80211_get_station(struct wiphy *wiphy, struct net_device *ndev,
+ 				const u8 *mac, struct station_info *sinfo);
+@@ -399,7 +399,7 @@ int mtk_p2p_cfg80211_mgmt_tx_cancel_wait(struct wiphy *wiphy,
+ 					 struct wireless_dev *wdev,
+ 					 u64 cookie);
+ 
+-int mtk_p2p_cfg80211_stop_ap(struct wiphy *wiphy, struct net_device *dev);
++int mtk_p2p_cfg80211_stop_ap(struct wiphy *wiphy, struct net_device *dev, unsigned int link_id);
+ 
+ #if (LINUX_VERSION_CODE >= KERNEL_VERSION(4, 4, 0))
+ int mtk_p2p_cfg80211_del_station(struct wiphy *wiphy, struct net_device *dev, struct station_del_parameters *params);
+@@ -417,7 +417,7 @@ void mtk_p2p_cfg80211_mgmt_frame_register(IN struct wiphy *wiphy,
+ int
+ mtk_p2p_cfg80211_set_bitrate_mask(IN struct wiphy *wiphy,
+ 				  IN struct net_device *dev,
+-				  IN const u8 *peer, IN const struct cfg80211_bitrate_mask *mask);
++				  IN unsigned int link_id, IN const u8 *peer, IN const struct cfg80211_bitrate_mask *mask);
+ 
+ #if CONFIG_NL80211_TESTMODE
+ 
+diff --git a/connectivity/wlan/core/gen3/os/linux/plat/mt6771/plat_priv.c b/connectivity/wlan/core/gen3/os/linux/plat/mt6771/plat_priv.c
+index 0cfbc63..7459d51 100644
+--- a/connectivity/wlan/core/gen3/os/linux/plat/mt6771/plat_priv.c
++++ b/connectivity/wlan/core/gen3/os/linux/plat/mt6771/plat_priv.c
+@@ -12,7 +12,10 @@
+ 
+ #ifdef CONFIG_MTK_CPU_CTRL
+ #include <cpu_ctrl.h>
+-#elif LINUX_VERSION_CODE <= KERNEL_VERSION(4, 4, 146)
++#elif LINUX_VERSION_CODE <= KERNEL_VERSION(4, 4, 146) || defined(PENNYOS_SHIM_PPM)
++/* pennyos: the vendor kernel is 4.4.146, i.e. this is the branch it built;
++ * keep it (PPM and the EMI pm_qos class are stubs in pennyos_shim).
++ */
+ #include "legacy_controller.h"
+ #endif
+ 
+@@ -32,7 +35,7 @@
+ #define CLUSTER_NUM  2       /* 2 clusters, 4 big cores + 4 little cores */
+ 
+ #if defined(COFNIG_MTK_CPU_CTRL) || \
+-	(LINUX_VERSION_CODE <= KERNEL_VERSION(4, 4, 146))
++	(LINUX_VERSION_CODE <= KERNEL_VERSION(4, 4, 146)) || defined(PENNYOS_SHIM_PPM)
+ int kalBoostCpu(unsigned int level)
+ {
+ 	int i = 0;
+diff --git a/connectivity/wlan/core/gen3/os/linux/platform.c b/connectivity/wlan/core/gen3/os/linux/platform.c
+index 939fe22..ee3da5c 100644
+--- a/connectivity/wlan/core/gen3/os/linux/platform.c
++++ b/connectivity/wlan/core/gen3/os/linux/platform.c
+@@ -305,7 +305,8 @@ static int nvram_read(char *filename, char *buf, ssize_t len, int offset)
+ 		pos = (loff_t)offset;
+ 
+ #if (LINUX_VERSION_CODE >= KERNEL_VERSION(4, 4, 0))
+-		retLen = __vfs_read(fd, p, len, &pos);
++		/* pennyos: kernel buffer -> kernel_read() */
++		retLen = kernel_read(fd, (__force void *)p, len, &pos);
+ #else
+ 		retLen = fd->f_op->read(fd, buf, len, &fd->f_pos);
+ #endif
+@@ -384,7 +385,8 @@ static int nvram_write(char *filename, char *buf, ssize_t len, int offset)
+ 		p = (__force char __user *)buf;
+ 		pos = (loff_t)offset;
+ 
+-		retLen = __vfs_write(fd, p, len, &pos);
++		/* pennyos: kernel buffer -> kernel_write() */
++		retLen = kernel_write(fd, (__force const void *)p, len, &pos);
+ #else
+ 		retLen = fd->f_op->write(fd, buf, len, &fd->f_pos);
+ #endif

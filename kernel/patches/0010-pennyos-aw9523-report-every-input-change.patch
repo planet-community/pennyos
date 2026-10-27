@@ -1,0 +1,21 @@
+diff --git a/drivers/pinctrl/pinctrl-aw9523.c b/drivers/pinctrl/pinctrl-aw9523.c
+--- a/drivers/pinctrl/pinctrl-aw9523.c
++++ b/drivers/pinctrl/pinctrl-aw9523.c
+@@ -493,8 +493,15 @@
+ 		val |= (u8)tmp << (i * 8);
+ 	}
+ 
+-	/* Handle GPIO input release interrupt as well */
+-	changed_gpio = awi->irq->cached_gpio ^ val;
++	/*
++	 * pennyos: tell every mapped pin, not only the ones that differ from the
++	 * value seen at the previous interrupt. That value goes stale whenever a
++	 * consumer reads the inputs itself (reading clears the chip's interrupt), and
++	 * a key matrix does exactly that while scanning; a change back to the stale
++	 * value was then dropped, so a key press got lost. The interrupt line only
++	 * fires on a real change, and consumers read the pins themselves anyway.
++	 */
++	changed_gpio = GENMASK(awi->gpio.ngpio - 1, 0);
+ 	awi->irq->cached_gpio = val;
+ 
+ 	/*

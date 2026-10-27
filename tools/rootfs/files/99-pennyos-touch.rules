@@ -1,0 +1,5 @@
+# Planet Cosmo, SSD20xx main touchscreen: coordinates are rotated 180 degrees relative
+# to the panel. The device tree fixes that (touchscreen-inverted-x/-y, applied by the
+# kernel driver); this is the fallback for boot images whose DT predates that fix, so
+# it only applies when the DT property is absent - the two can never both be active.
+ACTION=="add|change", SUBSYSTEM=="input", ATTRS{name}=="Solomon SSD20xx Touchscreen", TEST!="/proc/device-tree/soc/i2c@11007000/touchscreen@53/touchscreen-inverted-x", ENV{LIBINPUT_CALIBRATION_MATRIX}="-1 0 1 0 -1 1"

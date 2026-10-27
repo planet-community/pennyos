@@ -1,0 +1,17 @@
+#!/bin/sh
+# waybar custom module: the "close window" button, shown only while a window has
+# focus. Follows niri's event stream instead of polling.
+show() {
+  if niri msg focused-window 2>/dev/null | grep -q '^Window ID'; then
+    # Font Awesome "xmark" (U+F00D), written as bytes so editors cannot lose it
+    printf '{"text":"\357\200\215","class":"active"}\n'
+  else
+    echo '{"text":""}'
+  fi
+}
+show
+niri msg event-stream 2>/dev/null | while read -r line; do
+  case "$line" in
+    Window*|Workspace*|*focus*) show ;;
+  esac
+done

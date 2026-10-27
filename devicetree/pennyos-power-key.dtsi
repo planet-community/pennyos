@@ -1,0 +1,12 @@
+// SPDX-License-Identifier: (GPL-2.0-only OR MIT)
+/*
+ * Keep the PMIC's hardware "hold the power key to force a reset" working.
+ * Without mediatek,long-press-mode the mtk-pmic-keys driver actively DISABLES it
+ * (LP_DISABLE), leaving no way to recover a hung or half-powered-off device.
+ * 1 = LP_ONEKEY (power key alone); power-off-time-sec 0 selects the shortest (8 s).
+ * On the Cosmo the power key is the Esc/On key.
+ */
+&mt6358keys {
+	mediatek,long-press-mode = <1>;
+	power-off-time-sec = <0>;
+};

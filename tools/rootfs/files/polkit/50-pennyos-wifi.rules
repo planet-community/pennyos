@@ -1,0 +1,11 @@
+// Members of `netdev` (the desktop user) may start the radio and restart the Wi-Fi
+// service without a password, so the bar's Wi-Fi menu can recover by itself.
+// Nothing else: no other units, no stopping.
+polkit.addRule(function (action, subject) {
+    if (action.id == "org.freedesktop.systemd1.manage-units" && subject.isInGroup("netdev")) {
+        var unit = action.lookup("unit"), verb = action.lookup("verb");
+        if ((unit == "penny-conn.service" && verb == "start") ||
+            (unit == "wpa_supplicant@wlan0.service" && (verb == "start" || verb == "restart")))
+            return polkit.Result.YES;
+    }
+});

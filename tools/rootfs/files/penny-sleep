@@ -1,0 +1,23 @@
+#!/bin/sh
+# Put the Cosmo to sleep (s2idle), retrying when a driver says "not now".
+#
+# The Wi-Fi/Bluetooth transport driver (btif) only agrees to suspend once the radio
+# chip has gone idle, a few seconds after its last traffic; until then the whole
+# suspend is cancelled. Android simply tries again, so do the same.
+S=/sys/power/suspend_stats
+tries=${1:-8}
+i=0
+while [ "$i" -lt "$tries" ]; do
+  i=$((i + 1))
+  ok=$(cat $S/success); bad=$(cat $S/fail)
+  systemctl suspend || exit 1
+  # wait for this attempt to finish one way or the other
+  n=0
+  while [ "$(cat $S/success)" = "$ok" ] && [ "$(cat $S/fail)" = "$bad" ] && [ $n -lt 20 ]; do
+    sleep 0.5; n=$((n + 1))
+  done
+  [ "$(cat $S/success)" != "$ok" ] && exit 0
+  sleep 4
+done
+logger -t penny-sleep "gave up after $tries attempts (last refusing device: $(cat $S/last_failed_dev))"
+exit 1

@@ -1,0 +1,24 @@
+#!/bin/sh
+# Set the MT6370 charger's limits from what the USB-C port advertises.
+#
+# The mainline mt6370-charger driver starts at 500 mA input / 900 mA charge, does
+# not follow the Type-C port manager, and leaves the minimum input voltage at the
+# chip's 13.4 V reset value, so left alone the phone does not charge from 5 V.
+# Called by udev when the charger appears and whenever the Type-C supply changes.
+# Conservative on purpose: capped at 1.5 A in, 1.5 A into the cell, 4.2 V.
+CHG=/sys/class/power_supply/mt6370-charger
+[ -d "$CHG" ] || exit 0
+avail=500000
+for t in /sys/class/power_supply/tcpm-source-psy-*; do
+  [ -r "$t/current_max" ] || continue
+  [ "$(cat "$t/online" 2>/dev/null)" = 1 ] || continue
+  c=$(cat "$t/current_max"); [ "$c" -gt "$avail" ] && avail=$c
+done
+[ "$avail" -gt 1500000 ] && avail=1500000
+# The chip powers up asking for at least 13.4 V on its input and throttles the input
+# current to hold that, which on a 5 V supply means almost no current at all. The
+# bootloader and Android set 4.5-4.6 V; mainline leaves the reset value.
+[ "$(cat $CHG/input_voltage_limit)" = 4600000 ] || echo 4600000 > $CHG/input_voltage_limit
+echo "$avail" > $CHG/input_current_limit
+echo "$avail" > $CHG/constant_charge_current
+logger -t penny-charge "input limit and charge current set to $((avail / 1000)) mA"

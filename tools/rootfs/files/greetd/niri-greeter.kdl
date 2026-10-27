@@ -1,0 +1,45 @@
+// niri as the login screen's compositor: one output, the Cosmo keyboard layout,
+// no key bindings, gtkgreet as the only window (and the PennyOS animation behind
+// it). niri exits when gtkgreet does.
+output "DSI-1" {
+    transform "normal"
+    scale 1.75
+    background-color "#16161e"
+}
+
+// the keyboard layout is in /etc/greetd/keyboard.kdl (set by penny-setup)
+include "keyboard.kdl"
+
+input {
+    touch {
+        map-to-output "DSI-1"
+    }
+}
+
+cursor {
+    xcursor-theme "Bibata-Modern-Ice"
+    xcursor-size 24
+    hide-when-typing
+}
+
+hotkey-overlay {
+    skip-at-startup
+}
+
+layout {
+    background-color "#16161e"
+}
+
+binds {
+}
+
+// the PennyOS animation while the login box starts (it covers the finished logo)
+spawn-at-startup "/usr/local/bin/penny-splash" "--greeter"
+
+// The login box as an ordinary full-screen window, not a layer-shell surface (-l):
+// niri gives a new window the keyboard at once, while the layer surface often came
+// up looking focused but typing went nowhere until it was tapped twice.
+window-rule {
+    open-fullscreen true
+}
+spawn-sh-at-startup "gtkgreet -s /etc/greetd/gtkgreet.css; niri msg action quit --skip-confirmation"
