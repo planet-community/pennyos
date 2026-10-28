@@ -76,6 +76,27 @@ Readings are battery current from `cosmo_fg` (negative = discharging), averaged 
     "idle". Real savings need the MediaTek idle/suspend firmware protocol.
   - Wake sources tried: RTC alarm only.
 
+## Fuel gauge and thermal protection (2026-10-28)
+
+- **Chromium powered the phone off.** Starting it D-Bus-activates UPower. The old
+  `cosmo-battery` had no voltage or percentage, so UPower took it as 0 % and ran its
+  critical action (power off) exactly 20 s later. Fixed by giving the battery a real
+  percentage (below), not by masking UPower.
+- **Coulomb counter checked against the current**, 1 s current samples over about 60 s:
+  idle +24 mA averaged vs +27 mA from the counter; eight busy cores -172 vs -174 mA.
+  Single current readings swing a lot; compare averages, not spot values.
+- **Battery profile** from the stock device tree (`/battery`, 4 temperature tables of
+  100 points: discharged charge, OCV, resistance). 25 C: 4.36 V at full; 618 mAh is
+  above an OCV of 4.2 V, 4276 mAh is used by 3.4 V, so 3658 mAh between; 155 mOhm at
+  half charge. Android charged to 4.4 V (`battery_cv`); we stop at 4.2 V.
+- **SoC temperature** (auxadc_thermal, MT8183 data): 35 C idle, 50.7 C after 40 s of
+  eight busy cores, back to 36 C 20 s later. Only `cpu-thermal` registers; the tzts
+  zones have no trips.
+- **Cooling without cpufreq or hotplug:** confining `user.slice` with
+  `AllowedCPUs=` works and is reversible (set it back to `0-7`; an empty value does not
+  reset `cpuset.cpus`). The GPU's devfreq `max_freq` (300-800 MHz) works as a cap.
+  `CONFIG_CFS_BANDWIDTH` is off, so `cpu.max` is not available.
+
 ## Android reference (same phone, same port)
 
 Screen at full brightness: battery current hovers around zero. cpuidle states

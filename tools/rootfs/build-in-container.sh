@@ -77,9 +77,6 @@ blacklist pwm_mtk_disp
 softdep panel_simple pre: mediatek_drm
 EOF
 
-# cosmo_fg has no device to match on, so it must be loaded by name
-echo cosmo_fg > "$R/etc/modules-load.d/pennyos.conf"
-
 # Grow the filesystem to fill the partition on first boot, then never again.
 cat > "$R/etc/systemd/system/pennyos-growfs.service" <<'EOF'
 [Unit]
@@ -110,8 +107,10 @@ install -m 644 /work/tools/rootfs/files/90-pennyos-backlight.rules "$R/etc/udev/
 install -m 644 /work/tools/rootfs/files/91-pennyos-charger.rules "$R/etc/udev/rules.d/"
 install -m 644 /work/tools/rootfs/files/92-pennyos-wifi.rules "$R/etc/udev/rules.d/"
 install -m 755 /work/tools/rootfs/files/penny-charge-setup "$R/usr/local/bin/"
+install -m 755 /work/tools/rootfs/files/penny-thermal "$R/usr/local/bin/"
+install -m 644 /work/tools/rootfs/files/penny-thermal.service "$R/etc/systemd/system/"
 
-chroot "$R" systemctl enable systemd-networkd ssh pennyos-growfs.service >/dev/null 2>&1
+chroot "$R" systemctl enable systemd-networkd ssh pennyos-growfs.service penny-thermal.service >/dev/null 2>&1
 
 # User: cosmo / cosmo (sudo) - a known default so the on-device console works out
 # of the box. `penny-setup` (Settings > First-time setup) changes name and password.

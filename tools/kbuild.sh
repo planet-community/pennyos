@@ -120,7 +120,7 @@ case "$cmd" in
     # out-of-tree drivers kept in kernel/drivers/ -> into the tree, hooked into Kbuild once
     in_container_q bash -c '
       set -e
-      # battery current reader (MT6358 fuel gauge)
+      # fuel gauge (MT6358 coulomb counter + MT6370 cell voltage)
       p=drivers/power/supply
       cp /work/kernel/drivers/cosmo_fg.c $p/cosmo_fg.c
       grep -q BATTERY_COSMO_FG $p/Makefile || echo "obj-\$(CONFIG_BATTERY_COSMO_FG)	+= cosmo_fg.o" >> $p/Makefile
@@ -128,7 +128,7 @@ case "$cmd" in
         python3 - $p/Kconfig <<PY
 import sys
 p=sys.argv[1]; s=open(p).read(); i=s.rstrip().rfind("endif")
-s=s[:i]+"config BATTERY_COSMO_FG\\n\\ttristate \\"MT6358 fuel-gauge current reader (Planet Cosmo)\\"\\n\\tdepends on MFD_MT6397\\n\\thelp\\n\\t  Instantaneous battery current from the MT6358 FGADC.\\n\\n"+s[i:]
+s=s[:i]+"config BATTERY_COSMO_FG\\n\\ttristate \\"MT6358 fuel gauge (Planet Cosmo)\\"\\n\\tdepends on MFD_MT6397\\n\\thelp\\n\\t  State of charge from the MT6358 coulomb counter and the cell voltage.\\n\\n"+s[i:]
 open(p,"w").write(s)
 PY
       fi
@@ -183,7 +183,7 @@ PY
       rm -f $d/pennyos-*.dtsi
       sed -i -E "/^#include \"(pennyos-[a-z0-9-]+|mt6771-mtk-lk-compat)\.dtsi\"$/d" $d/mt6771-planet-cosmocom.dts
       cp /work/devicetree/*.dtsi $d/
-      for inc in pennyos-debug.dtsi pennyos-panel-ssd2092.dtsi pennyos-power-key.dtsi pennyos-touch-ssd20xx.dtsi pennyos-consys.dtsi pennyos-lid-keys.dtsi pennyos-sound.dtsi pennyos-kbd-backlight.dtsi mt6771-mtk-lk-compat.dtsi; do
+      for inc in pennyos-debug.dtsi pennyos-panel-ssd2092.dtsi pennyos-power-key.dtsi pennyos-touch-ssd20xx.dtsi pennyos-consys.dtsi pennyos-lid-keys.dtsi pennyos-sound.dtsi pennyos-kbd-backlight.dtsi pennyos-battery.dtsi mt6771-mtk-lk-compat.dtsi; do
         grep -q "#include \"$inc\"" $d/mt6771-planet-cosmocom.dts || printf "\n#include \"%s\"\n" "$inc" >> $d/mt6771-planet-cosmocom.dts
       done
       tail -5 $d/mt6771-planet-cosmocom.dts'

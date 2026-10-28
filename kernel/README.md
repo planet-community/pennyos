@@ -13,7 +13,7 @@ branch `mt6771` (Linux 6.4; `mt6771.dtsi` `#include`s the mainline `mt8183.dtsi`
   keyboard, Wi-Fi extensions), applied in order by `./tools/kbuild.sh patch`.
   [../docs/hardware-support.md](../docs/hardware-support.md) says which component needs which.
 - `drivers/`: drivers written for this project: main panel (`panel-planet-ssd2092.c`),
-  touchscreen (`ssd20xx.c`), fuel-gauge current (`cosmo_fg.c`), sound card
+  touchscreen (`ssd20xx.c`), fuel gauge (`cosmo_fg.c`), sound card
   (`cosmo-sound.c`). `./tools/kbuild.sh drivers-sync` copies them into the tree and
   hooks them into Kbuild.
 - `connectivity/`: MediaTek's vendor Wi-Fi/Bluetooth stack, ported to 6.4 as one patch

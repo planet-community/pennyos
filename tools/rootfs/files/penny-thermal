@@ -1,0 +1,48 @@
+#!/bin/sh
+# Keep the SoC cool by holding back apps when it gets hot.
+#
+# This kernel has no CPU frequency scaling and CPU hotplug is unusable (cores taken
+# offline never come back, see research/power.md), so the kernel's own passive trips
+# have nothing to act on. What does work: confining user.slice (every app) to fewer
+# cores, little ones first (cpu0-3 are Cortex-A53, cpu4-7 Cortex-A73), and capping
+# the GPU clock. System services keep all cores. The kernel still powers off on its
+# own at the 115 C critical trip.
+#
+# level  enter at   apps on     GPU max
+#   0       -       cpu0-7      800 MHz
+#   1     75 C      cpu0-5      580 MHz
+#   2     85 C      cpu0-3      400 MHz
+#   3     95 C      cpu0-1      300 MHz
+# A level is left once the temperature is HYST below its entry point.
+ZONE=$(grep -lx cpu-thermal /sys/class/thermal/thermal_zone*/type 2>/dev/null | head -1)
+[ -n "$ZONE" ] || { echo "penny-thermal: no cpu-thermal zone (auxadc_thermal not loaded?)" >&2; exit 1; }
+ZONE=${ZONE%/type}
+GPU=/sys/class/devfreq/13040000.gpu
+HYST=7000
+ENTER="0 75000 85000 95000"
+CPUS="0-7 0-5 0-3 0-1"
+GPU_HZ="800000000 580000000 400000000 300000000"
+
+nth() { shift "$1"; echo "$1"; }
+
+apply() {
+  systemctl set-property --runtime user.slice AllowedCPUs="$(nth $(($1 + 1)) $CPUS)"
+  [ -w "$GPU/max_freq" ] && echo "$(nth $(($1 + 1)) $GPU_HZ)" > "$GPU/max_freq"
+}
+
+level=0
+apply 0
+trap 'apply 0; exit 0' INT TERM
+while :; do
+  t=$(cat "$ZONE/temp")
+  new=$level
+  while [ "$new" -lt 3 ] && [ "$t" -ge "$(nth $((new + 2)) $ENTER)" ]; do new=$((new + 1)); done
+  while [ "$new" -gt 0 ] && [ "$t" -lt $(( $(nth $((new + 1)) $ENTER) - HYST )) ]; do new=$((new - 1)); done
+  if [ "$new" != "$level" ]; then
+    logger -t penny-thermal "$((t / 1000)) C: level $level -> $new (apps on cpu $(nth $((new + 1)) $CPUS))"
+    level=$new
+    apply "$level"
+  fi
+  sleep 2 &
+  wait $!
+done

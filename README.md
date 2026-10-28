@@ -18,8 +18,8 @@ engineering of unsupported hardware. It is **research + tooling**, not (yet) a d
 
 Mainline **Linux 6.4** + **Debian 13** + the **niri** desktop run on a real Cosmo from the
 internal eMMC, alongside stock Android (multiboot slot, nothing on the Android side is
-touched). Display, GPU, touch, keyboard (and its backlight), Wi-Fi, charging, screen-off, sleep on lid close
-and USB networking work; the microphone records; the modem, speakers, cameras and
+touched). Display, GPU, touch, keyboard (and its backlight), Wi-Fi, charging and the battery level, thermal protection,
+screen-off, sleep on lid close and USB networking work; the microphone records; the modem, speakers, cameras and
 Bluetooth do not.
 
 **[What works and what doesn't, and by what means](docs/hardware-support.md)** has

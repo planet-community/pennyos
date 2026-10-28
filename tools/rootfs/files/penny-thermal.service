@@ -1,0 +1,12 @@
+[Unit]
+Description=pennyos thermal control: hold back apps when the SoC is hot
+Documentation=file:///usr/local/bin/penny-thermal
+After=systemd-modules-load.service
+
+[Service]
+ExecStart=/usr/local/bin/penny-thermal
+Restart=on-failure
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target

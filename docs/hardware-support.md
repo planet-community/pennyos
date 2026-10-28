@@ -36,8 +36,8 @@ MT6771 and Cosmo device trees on top of upstream.
 | Wi-Fi (2.4 and 5 GHz, WPA2) | **vendor port** (MediaTek WMT + gen3 wlan driver, ~790 files) + **binary blobs** (MT6631 firmware patch, per-phone calibration from NVRAM) + own daemon `penny-wmtd` | Comes up at boot. About 10-23 Mbit/s measured. Joined from the bar: tapping the Wi-Fi icon drops down signal, address, disconnect and forget, or the networks in range or `penny-wifi-connect` in a terminal. Personal (password) and open networks only; enterprise and WEP are refused. The new menu is not yet tested on the phone. [wifi-scoping](../research/wifi-scoping.md) |
 | USB device mode: serial console and Ethernet | mainline driver (mtu3) + patch 0002, g_cdc gadget | SSH over the cable. The patch forces "VBUS present", so unplugging is not detected. |
 | Charging | mainline driver (mt6370-charger) + **userspace** `penny-charge-setup` | The script sets the minimum input voltage and follows the USB-C current; without it the phone does not charge from 5 V. Charge voltage is a conservative 4.2 V. |
-| Battery current and charge counter | **own driver** (`cosmo_fg.c`, reads the MT6358 fuel gauge) | No percentage. |
-| Battery level in the bar | **userspace** estimate from cell voltage (MT6370 ADC, mainline driver) | Not a real fuel gauge; reads high while charging. |
+| Battery level (fuel gauge) | **own driver** (`cosmo_fg.c`: MT6358 coulomb counter + MT6370 cell voltage), `devicetree/pennyos-battery.dtsi` | Percentage, charge, voltage and status in `cosmo-battery`, read by the bar and UPower (which powers off at 2 %). Starts from the open-circuit voltage at boot, counts charge from then on, snaps to 100 % when the charger finishes. Battery data from the vendor profile, 25 C table only (no battery temperature yet); 100 % = 4.2 V, 0 % = 3.4 V, 3658 mAh between. Counter checked against the measured current on the phone; the percentage over a full discharge is not yet checked. |
+| SoC temperature and thermal protection | mainline driver (auxadc_thermal, MT8183 variant) + **userspace** `penny-thermal` | `cpu-thermal` zone; the kernel powers off at 115 C. There is no CPU frequency scaling and cores cannot be taken offline, so `penny-thermal` instead confines apps (`user.slice`) to fewer, then only little, cores and caps the GPU clock from 75 C. Levels checked with emulated temperatures; never yet reached for real. |
 | USB-C port controller | mainline driver (tcpci-mt6370) | Used for the advertised current. |
 | Real-time clock | mainline driver (rtc-mt6397) | Also the wake-up timer for sleep. |
 | Watchdog and reboot | mainline driver (mtk-wdt) + patch 0001 | The patch takes over the watchdog as LK leaves it; without it `reboot` hangs. |
@@ -75,7 +75,7 @@ MT6771 and Cosmo device trees on top of upstream.
 | Fingerprint reader | Not started. |
 | Sensors (accelerometer, light, ...) | Not started. |
 | NFC | Not started. |
-| Real battery percentage | Needs a fuel-gauge driver; only current and a voltage estimate exist. |
+| Battery temperature | The MT6370 ADC has the thermistor input (`ts_bat`); its conversion to degrees is not worked out. The gauge then could use the vendor tables for other temperatures. |
 | Novatek NT36672 panel variant | No panel entry with an init sequence and no touch driver. Such units boot with the bootloader's picture but this repo does not describe them. |
 | Keyboard layouts other than Japanese | The key codes work; the Fn layer needs an xkb variant per layout. |
 
