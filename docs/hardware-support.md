@@ -28,6 +28,7 @@ MT6771 and Cosmo device trees on top of upstream.
 | SD card | mainline driver (mtk-sd) | |
 | Display | mainline driver (mediatek-drm, DSI) + patches 0005/0006; **own driver** for the panel (`panel-planet-ssd2092.c`) | Panel reset, init and suspend sequences come from Planet's published 4.4 kernel source. Powers off and on cleanly. |
 | Backlight | mainline driver (mt6370-backlight) | Maximum capped to what Android uses. |
+| Keyboard backlight | mainline drivers (pwm-mediatek, leds-pwm), `devicetree/pennyos-kbd-backlight.dtsi`; **userspace** `penny-kbd-light` | SoC PWM channel A on GPIO90, found in Planet's `aw9524_key.c` (despite the name, not the expander). Fn+P steps off / 25 / 50 / 100 %. Levels were checked on the phone by driving the PWM by hand; the device-tree node and Fn+P are not yet tested on the phone. |
 | GPU (Mali-G72, GLES 3.1) | mainline driver (Panfrost) + Mesa | |
 | Touchscreen | **own driver** (`ssd20xx.c`) | The chip's touch firmware lives in its own flash; nothing is loaded from disk. |
 | Keyboard | matrix driver from the kernel tree (`gpio-fastmatrix-keyboard`, not upstream); **userspace** xkb layout (`tools/rootfs/files/xkb/cosmo`) for the Fn layer | Only the Japanese layout has a variant. Fn types the printed legends; the planet key is the desktop modifier. Fast typing dropped keys (a press during a scan was never reported); two kernel patches (0009, 0010) fix that, not yet tested on the phone. |
@@ -74,7 +75,6 @@ MT6771 and Cosmo device trees on top of upstream.
 | Fingerprint reader | Not started. |
 | Sensors (accelerometer, light, ...) | Not started. |
 | NFC | Not started. |
-| Keyboard backlight | Not started. |
 | Real battery percentage | Needs a fuel-gauge driver; only current and a voltage estimate exist. |
 | Novatek NT36672 panel variant | No panel entry with an init sequence and no touch driver. Such units boot with the bootloader's picture but this repo does not describe them. |
 | Keyboard layouts other than Japanese | The key codes work; the Fn layer needs an xkb variant per layout. |

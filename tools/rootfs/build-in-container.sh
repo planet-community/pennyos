@@ -155,7 +155,8 @@ if [ -x /work/out/niri/niri ]; then
   install -m 755 /work/tools/rootfs/files/penny-bar-battery /work/tools/rootfs/files/penny-wifi-menu \
     /work/tools/rootfs/files/penny-bar-close /work/tools/rootfs/files/penny-power-menu \
     /work/tools/rootfs/files/penny-sleep /work/tools/rootfs/files/penny-hold-esc \
-    /work/tools/rootfs/files/penny-settings /work/tools/rootfs/files/penny-setup "$R/usr/local/bin/"
+    /work/tools/rootfs/files/penny-settings /work/tools/rootfs/files/penny-setup \
+    /work/tools/rootfs/files/penny-kbd-light "$R/usr/local/bin/"
   # launcher tidy-up: a Settings entry, "Terminal" for foot, helper entries hidden
   # (/usr/local/share/applications overrides /usr/share/applications by file name)
   install -d "$R/usr/local/share/applications"

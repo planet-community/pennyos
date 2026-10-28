@@ -46,7 +46,7 @@ Legend: **P1** near-term & tractable · **P1★** our RE proof-of-concept · **P
 | P1 | **Magnetometer** | `msensor@0c` (Voltafield AF6133E) | absent | **No** upstream AF6133E — needs driver or skip | med |
 | P2 | **NFC** | `nfc@28` on i2c3 (NXP PN553), IRQ GPIO71 | absent | **Yes** — mainline `nxp,nci`/`nxp-nci-i2c` (PN553 compatible) | low-med |
 | P2 | **HDMI-out** | `sii9022_hdmi@39` + `siiedid@50` on i2c3 (SiI9022, over USB-C) | absent | **Yes** — mainline `sil,sii9022` DRM bridge | med |
-| P2 | **Keyboard backlight** | AW9524 `aw9524_key` @ i2c3 0x5b | LEDs via AW9523 present; backlight (AW9524) **not modeled** | leds-class once I2C up | low |
+| P2 | **Keyboard backlight** | ~~AW9524~~ SoC PWM_A on GPIO90 (driven from `aw9524_key.c`) | **done**: `pennyos-kbd-backlight.dtsi` | `pwm-mediatek` + `leds-pwm` | low |
 | P2 | **Battery/charger validation** | MT6370 charger in DT | node present, **untested** | mt6370-charger upstream | low (validate) |
 | P3 | **WiFi/BT/GPS/FM** | MT6631 + on-SoC CONNAC (`wmt_drv`, `wlan_drv_gen3`) | absent | Partial/complex — MTK CONNAC mainline support is limited | high |
 | P3 | **Audio** | MT6358 codec + RT5509 smart-amp | mt6358.dtsi included (codec present) but **no sound card/AFE/RT5509** | mt6358 codec + mt8183-afe upstream; RT5509 needs `rt5514`? no — needs amp driver | high |

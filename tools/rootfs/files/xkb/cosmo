@@ -35,6 +35,7 @@ xkb_symbols "jp" {
     key <AD05> { [ t, T, XF86AudioMicMute,      XF86AudioMicMute      ] };
     key <AD06> { [ y, Y, slash,                 slash                 ] };
     key <AD08> { [ i, I, equal,                 equal                 ] };
+    key <AD10> { [ p, P, XF86KbdLightOnOff,     XF86KbdLightOnOff     ] };
     key <AC02> { [ s, S, XF86AudioPlay,         XF86AudioPlay         ] };
     key <AC06> { [ h, H, underscore,            underscore            ] };
     key <AC07> { [ j, J, at,                    at                    ] };

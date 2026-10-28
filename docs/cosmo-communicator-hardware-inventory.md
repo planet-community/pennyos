@@ -225,8 +225,10 @@ Gemian/postmarketOS/SailfishOS/UBports backends), `codi_protocols`, `planet-cosm
 - **Second expander: Awinic AW9524** (`mediatek,aw9524_key`, `CONFIG_MTK_AW9524=y`, SHDN/HWEN GPIO109) —
   used for status/lock LEDs and also toggles the SiI9022 HDMI hot-plug line. Mainline routes 12 indicator LEDs
   through a second AW9523B on **i2c3** (addr 0x5b, reset GPIO109). `[K][M]`
-- **Backlight:** keyboard-backlight LED node via MT6370 / expander; keyboard-backlight flex marked
-  `DOK-V532BU BLM VER:02` in FCC photos. `[K][F]`
+- **Backlight:** SoC PWM channel A (Planet's `PWM1`) on **GPIO90**, which the vendor drives from
+  `aw9524_key.c` (it also raises GPIO178); not the MT6370 and not the expander. Keyboard-backlight
+  flex marked `DOK-V532BU BLM VER:02` in FCC photos. `[K][F]` Works in PennyOS:
+  `devicetree/pennyos-kbd-backlight.dtsi`.
 
 ---
 

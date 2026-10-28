@@ -79,7 +79,8 @@ case "$cmd" in
       echo "=== requested Cosmo symbols in final .config ==="
       for s in KEYBOARD_GPIO_FASTMATRIX PINCTRL_AW9523 DRM_MEDIATEK DRM_PANEL_SIMPLE \
                DRM_PANFROST MFD_MT6370 REGULATOR_MT6370 CHARGER_MT6370 BACKLIGHT_MT6370 \
-               MEDIATEK_MT6370_ADC TYPEC_TCPM TYPEC_TCPCI TYPEC_TCPCI_MT6370; do
+               MEDIATEK_MT6370_ADC TYPEC_TCPM TYPEC_TCPCI TYPEC_TCPCI_MT6370 \
+               PWM_MEDIATEK LEDS_PWM; do
         v=$(grep -E "^CONFIG_$s=" .config || echo "CONFIG_$s=(dropped)")
         echo "  $v"
       done'
@@ -176,7 +177,7 @@ PY
       rm -f $d/pennyos-*.dtsi
       sed -i -E "/^#include \"(pennyos-[a-z0-9-]+|mt6771-mtk-lk-compat)\.dtsi\"$/d" $d/mt6771-planet-cosmocom.dts
       cp /work/devicetree/*.dtsi $d/
-      for inc in pennyos-debug.dtsi pennyos-panel-ssd2092.dtsi pennyos-power-key.dtsi pennyos-touch-ssd20xx.dtsi pennyos-consys.dtsi pennyos-lid-keys.dtsi pennyos-sound.dtsi mt6771-mtk-lk-compat.dtsi; do
+      for inc in pennyos-debug.dtsi pennyos-panel-ssd2092.dtsi pennyos-power-key.dtsi pennyos-touch-ssd20xx.dtsi pennyos-consys.dtsi pennyos-lid-keys.dtsi pennyos-sound.dtsi pennyos-kbd-backlight.dtsi mt6771-mtk-lk-compat.dtsi; do
         grep -q "#include \"$inc\"" $d/mt6771-planet-cosmocom.dts || printf "\n#include \"%s\"\n" "$inc" >> $d/mt6771-planet-cosmocom.dts
       done
       tail -5 $d/mt6771-planet-cosmocom.dts'

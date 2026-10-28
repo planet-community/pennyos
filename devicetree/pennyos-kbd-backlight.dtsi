@@ -1,0 +1,40 @@
+// SPDX-License-Identifier: (GPL-2.0-only OR MIT)
+/*
+ * Keyboard backlight: SoC PWM channel A (Planet's "PWM1") on GPIO90.
+ *
+ * Not the AW9524 expander, despite living in Planet's aw9524_key.c: that driver
+ * registers "kbd_backlight" but only programs PWM1 in FIFO mode (64-bit pattern,
+ * duty 0/20/40/60/80/100 %, ~25 kHz) and raises GPIO178. The stock DT's
+ * gpio_init_default has GPIO90 in mode 1 (PWM_A, output); it is the only PWM_A pad
+ * muxed. The MTK "mediatek,keyboard-backlight" led node is mode 0 (unused).
+ *
+ * GPIO178 is not claimed here: the board DTS already drives it high from the
+ * mmc1 pin states ("pins-pmu"), and a second owner would fail pinctrl.
+ */
+#include <dt-bindings/leds/common.h>
+
+/ {
+	kbd-backlight {
+		compatible = "pwm-leds";
+		pinctrl-names = "default";
+		pinctrl-0 = <&kbd_backlight_pins>;
+
+		led-0 {
+			function = LED_FUNCTION_KBD_BACKLIGHT;
+			pwms = <&pwm1 0 40000>;
+			max-brightness = <255>;
+		};
+	};
+};
+
+&pwm1 {
+	status = "okay";
+};
+
+&pio {
+	kbd_backlight_pins: kbd-backlight-pins {
+		pins {
+			pinmux = <PINMUX_GPIO90__FUNC_PWM_A>;
+		};
+	};
+};

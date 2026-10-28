@@ -45,7 +45,7 @@ audio codec · sensors · CoDi cover display · fingerprint reader
 | Main display/screen | **Works** — framebuffer / software render only |
 | Physical keyboard | **Partial** — mainline driver + DT node exist; not validated |
 | USB (Type-C, networking) | **Works** — USB networking confirmed |
-| LEDs / kbd backlight | **Partial** — DT nodes present, untested |
+| LEDs / kbd backlight | **Partial** — LED DT nodes present, untested; kbd backlight done (`pennyos-kbd-backlight.dtsi`, PWM_A on GPIO90) |
 | Battery / charging | **Untested** — MT6370 charger in DT |
 | Touchscreen | **Broken** — no controller in DT |
 | GPU / 3D (Mali-G72 / Panfrost) | **Broken** — not enabled at all |
