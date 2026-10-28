@@ -123,6 +123,44 @@ failed boot.
 
 ---
 
+## Using PennyOS: quick start
+
+Two keys do the work. **Planet** (the key with the planet logo) drives the desktop;
+**Fn** types the legends printed under the keys. The one shortcut to remember:
+
+> **Planet+Y** shows every shortcut on screen.
+
+The desktop is niri: apps open side by side in a strip you scroll through, and each
+workspace is a separate strip, stacked above and below.
+
+| Keys | What it does |
+|---|---|
+| Planet+Y | list all shortcuts |
+| Planet+D (or Fn+D) | run an app |
+| Planet+T | terminal |
+| Planet+Q | close the app |
+| Planet+Left / Right | switch app |
+| Planet+Up / Down | switch workspace (or window, when apps are stacked) |
+| Planet+Ctrl+Left / Right | move the app along the strip |
+| Planet+1 … 9 | go to workspace 1 … 9 |
+| Planet+F | app at half / full width |
+| Planet+Shift+F | full screen |
+| Planet+Z / X | app narrower / wider |
+| Fn+A | overview of all apps and workspaces |
+| Fn+B / Fn+N | screen dimmer / brighter |
+| Fn+Shift+B / Fn+Shift+N | keyboard light dimmer / brighter (off, 25, 50, 100 %) |
+| Fn+Esc | screen off / on |
+| Fn+R | screenshot |
+| Fn+Space | voice typing (English) |
+| hold Esc (or the side button) | power menu: lock, sleep, log out, restart, power off |
+| close the lid | lock and sleep; opening it wakes |
+
+**Settings** (in the app list, or `penny-settings`) has Wi-Fi, power, and the first-time
+setup (name, password, language, keyboard, time zone). **Wi-Fi** is also one tap away: the icon in the bar on the left
+edge. From a computer, `ssh` in over the USB cable (left port) as shown above.
+
+---
+
 ## Repo layout
 
 ```

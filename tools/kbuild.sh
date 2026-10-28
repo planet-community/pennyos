@@ -52,6 +52,12 @@ case "$cmd" in
   src)
     docker volume create "$VOL" >/dev/null
     if [ ! -d "$HOST_KERNEL/.git" ]; then
+      # nothing to pull from, but a tree already in the volume is still good to build
+      if in_container_q test -d /src/.git; then
+        echo "==> $HOST_KERNEL not found; building the source already in volume '$VOL'"
+        in_container_q git -C /src log -1 --oneline
+        exit 0
+      fi
       echo "ERROR: $HOST_KERNEL/.git not found. Clone it first:" >&2
       echo "  git clone --depth 1 --single-branch -b mt6771 https://github.com/affenull2345/linux.git $HOST_KERNEL" >&2
       exit 1
