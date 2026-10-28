@@ -35,7 +35,6 @@ xkb_symbols "jp" {
     key <AD05> { [ t, T, XF86AudioMicMute,      XF86AudioMicMute      ] };
     key <AD06> { [ y, Y, slash,                 slash                 ] };
     key <AD08> { [ i, I, equal,                 equal                 ] };
-    key <AD10> { [ p, P, XF86KbdLightOnOff,     XF86KbdLightOnOff     ] };
     key <AC02> { [ s, S, XF86AudioPlay,         XF86AudioPlay         ] };
     key <AC06> { [ h, H, underscore,            underscore            ] };
     key <AC07> { [ j, J, at,                    at                    ] };
@@ -44,8 +43,8 @@ xkb_symbols "jp" {
     key <AB02> { [ x, X, XF86AudioMute,         XF86AudioMute         ] };
     key <AB03> { [ c, C, XF86AudioLowerVolume,  XF86AudioLowerVolume  ] };
     key <AB04> { [ v, V, XF86AudioRaiseVolume,  XF86AudioRaiseVolume  ] };
-    key <AB05> { [ b, B, XF86MonBrightnessDown, XF86MonBrightnessDown ] };
-    key <AB06> { [ n, N, XF86MonBrightnessUp,   XF86MonBrightnessUp   ] };
+    key <AB05> { [ b, B, XF86MonBrightnessDown, XF86KbdBrightnessDown ] };
+    key <AB06> { [ n, N, XF86MonBrightnessUp,   XF86KbdBrightnessUp   ] };
 
     key.type[Group1] = "FOUR_LEVEL";
     key <TAB>  { [ Tab,       ISO_Left_Tab, Caps_Lock, Caps_Lock ] };

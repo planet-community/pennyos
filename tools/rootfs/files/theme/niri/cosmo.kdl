@@ -98,6 +98,8 @@ binds {
     // --min-value=1 keeps the bottom step from switching the backlight off.
     ISO_Level3_Shift+N allow-when-locked=true { spawn "brightnessctl" "-q" "-d" "mt6370-backlight" "--min-value=1" "set" "+10%"; }
     ISO_Level3_Shift+B allow-when-locked=true { spawn "brightnessctl" "-q" "-d" "mt6370-backlight" "--min-value=1" "set" "10%-"; }
-    // Keyboard backlight: Fn+P steps off / 25 / 50 / 100 %.
-    ISO_Level3_Shift+P allow-when-locked=true { spawn "/usr/local/bin/penny-kbd-light" "cycle"; }
+    // Keyboard backlight: Fn+Shift+N / Fn+Shift+B, also as printed; steps of
+    // off / 25 / 50 / 100 %.
+    ISO_Level3_Shift+Shift+N allow-when-locked=true { spawn "/usr/local/bin/penny-kbd-light" "up"; }
+    ISO_Level3_Shift+Shift+B allow-when-locked=true { spawn "/usr/local/bin/penny-kbd-light" "down"; }
 }

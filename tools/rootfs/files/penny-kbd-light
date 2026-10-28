@@ -1,24 +1,25 @@
 #!/bin/sh
-# Keyboard backlight: penny-kbd-light [cycle | off | <percent>]
+# Keyboard backlight: penny-kbd-light up | down | off | <percent>
 #
-# Fn+P runs "cycle": off -> 25 % -> 50 % -> 100 % -> off. The LED is the SoC PWM
-# on GPIO90 (devicetree/pennyos-kbd-backlight.dtsi); systemd-backlight restores
-# the last level at boot.
+# Fn+Shift+N / Fn+Shift+B (as printed on the keyboard) step through
+# off / 25 % / 50 % / 100 %. The LED is the SoC PWM on GPIO90
+# (devicetree/pennyos-kbd-backlight.dtsi); systemd-backlight restores the last
+# level at boot.
 LED=$(ls -d /sys/class/leds/*kbd_backlight 2>/dev/null | head -n 1)
 [ -n "$LED" ] || { echo "no keyboard backlight LED" >&2; exit 1; }
 max=$(cat "$LED/max_brightness")
 cur=$(cat "$LED/brightness")
+steps="0 $(( max / 4 )) $(( max / 2 )) $max"
 
-case "${1:-cycle}" in
-  cycle)
-    # the first step above the current level; past the top, off
+case "$1" in
+  up)   # the first step above the current level
+    new=$max
+    for v in $steps; do [ "$v" -gt "$cur" ] && { new=$v; break; }; done ;;
+  down) # the last step below it
     new=0
-    for pct in 25 50 100; do
-      v=$(( max * pct / 100 ))
-      [ "$v" -gt "$cur" ] && { new=$v; break; }
-    done ;;
+    for v in $steps; do [ "$v" -lt "$cur" ] && new=$v; done ;;
   off) new=0 ;;
-  *[!0-9]*|"") echo "usage: $0 [cycle|off|<percent>]" >&2; exit 1 ;;
+  *[!0-9]*|"") echo "usage: $0 up|down|off|<percent>" >&2; exit 1 ;;
   *) new=$(( max * $1 / 100 )) ;;
 esac
 brightnessctl -q -d "${LED##*/}" set "$new"

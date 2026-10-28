@@ -1,5 +1,5 @@
 # Let members of the `video` group set the panel backlight (brightness keys, idle
 # dimming and penny-screen run inside the desktop session, not as root).
 ACTION=="add", SUBSYSTEM=="backlight", RUN+="/bin/chgrp video /sys/class/backlight/%k/brightness", RUN+="/bin/chmod g+w /sys/class/backlight/%k/brightness"
-# Same for the keyboard backlight LED (Fn+P, penny-kbd-light).
+# Same for the keyboard backlight LED (Fn+Shift+B/N, penny-kbd-light).
 ACTION=="add", SUBSYSTEM=="leds", KERNEL=="*kbd_backlight", RUN+="/bin/chgrp video /sys/class/leds/%k/brightness", RUN+="/bin/chmod g+w /sys/class/leds/%k/brightness"
