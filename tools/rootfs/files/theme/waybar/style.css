@@ -24,7 +24,7 @@
 window#waybar {
     background: @bg;
     color: @fg;
-    border-bottom: 1px solid @surface;
+    border-right: 1px solid @surface;
 }
 
 tooltip {
@@ -36,7 +36,7 @@ tooltip label { color: @fg; }
 
 #custom-launcher, #custom-overview, #custom-close, #custom-power {
     font-size: 17px;
-    padding: 0 16px;
+    padding: 12px 0;
     color: @fg;
 }
 #custom-launcher { color: @blue; }
@@ -45,20 +45,20 @@ tooltip label { color: @fg; }
 #custom-launcher:hover, #custom-overview:hover, #custom-close:hover, #custom-power:hover { background: @surface; }
 
 #workspaces button {
-    padding: 0 12px;
+    padding: 8px 0;
     color: @dim;
-    border-bottom: 2px solid transparent;
+    border-left: 2px solid transparent;
 }
 #workspaces button.active, #workspaces button.focused {
     color: @fg;
-    border-bottom: 2px solid @blue;
+    border-left: 2px solid @blue;
 }
 #workspaces button.urgent { color: @orange; }
 #workspaces button:hover { background: @surface; box-shadow: none; text-shadow: none; }
 
-#window { padding: 0 14px; color: @dim; }
-#clock  { padding: 0 14px; color: @fg; font-weight: 600; }
-#network, #custom-battery { padding: 0 12px; color: @fg; }
+#clock  { padding: 8px 0; color: @fg; font-weight: 600; }
+#network, #custom-battery { padding: 8px 0; color: @fg; }
+#custom-battery { font-size: 11px; }
 #network { color: @cyan; }
 #network.disconnected, #network.linked { color: @dim; }
 #custom-battery { color: @green; }

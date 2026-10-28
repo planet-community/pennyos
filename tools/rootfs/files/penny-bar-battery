@@ -14,5 +14,6 @@ if [ "$on" = 1 ] && [ "$st" = Charging ]; then icon=""; cls=charging
 elif [ $pct -le 15 ]; then icon=""; cls=low
 elif [ $pct -le 50 ]; then icon=""; cls=normal
 else icon=""; cls=normal; fi
-printf '{"text":"%s  %d%%","tooltip":"%d.%02d V  %s  (estimated from voltage)","class":"%s"}\n' \
+# icon above the number: the bar is vertical and only 40 px wide
+printf '{"text":"%s\\n%d%%","tooltip":"%d.%02d V  %s  (estimated from voltage)","class":"%s"}\n' \
   "$icon" "$pct" $((mv / 1000)) $(((mv % 1000) / 10)) "${st:-unknown}" "$cls"

@@ -68,7 +68,7 @@ static void draw(cairo_t *cr, double w, double h, double t)
 		t = 2.0;
 	double fade = 1 - ease_in_out(span(t, 2.05, DURATION));
 	double u = fmin(w, h) / 100.0;        /* layout unit */
-	double cx = w / 2, cy = h / 2 - 9 * u;
+	double cx = w / 2, cy = h / 2 - 12 * u;
 
 	cairo_save(cr);
 	cairo_set_operator(cr, CAIRO_OPERATOR_SOURCE);
@@ -82,9 +82,9 @@ static void draw(cairo_t *cr, double w, double h, double t)
 	/* ---- the book computer: base on the table, lid hinged at its back edge ---- */
 	double appear = ease_out(span(t, 0.0, 0.35));
 	double open = ease_in_out(span(t, 0.15, 1.05));      /* 0 closed .. 1 open */
-	double bw = 44 * u, bh = 4.2 * u;               /* base, as wide as the Cosmo */
+	double bw = 44 * u, bh = 5.6 * u;               /* base, as wide as the Cosmo */
 	double by = cy + 14 * u + (1 - appear) * 4 * u; /* base top edge */
-	double lid_h = 22 * u;                         /* screen about 2:1, like the Cosmo */
+	double lid_h = 14.7 * u;                       /* a short screen over a big keyboard */
 	double ang = open * 0.58 * M_PI;                /* lid angle from closed, up to ~105 deg */
 	double lid_vis = lid_h * sin(ang);              /* projected height */
 	double lid_w = bw * (0.94 + 0.06 * cos(ang));   /* slight foreshortening at the top */
@@ -110,7 +110,7 @@ static void draw(cairo_t *cr, double w, double h, double t)
 	for (int row = 0; row < 3; row++)
 		for (int k = 0; k < 11; k++) {
 			double kw = bw * 0.072, kx = cx - bw * 0.43 + k * bw * 0.079 + (row == 1) * bw * 0.02;
-			rounded_rect(cr, kx, by + 0.6 * u + row * 1.15 * u, kw, 0.75 * u, 0.25 * u);
+			rounded_rect(cr, kx, by + 1.2 * u + row * 1.45 * u, kw, 0.95 * u, 0.3 * u);
 			rgba(cr, EDGE, 0.9);
 			cairo_fill(cr);
 		}

@@ -91,7 +91,7 @@ git clone --depth 1 -b mt6771 https://github.com/affenull2345/linux.git kernel/l
 # 3. reboot, pick the Debian/Linux entry. Log in as cosmo / cosmo, then run
 #    penny-setup (or Settings > First-time setup): user name, password, language,
 #    keyboard layout, time zone, host name.
-#    Wi-Fi: tap the Wi-Fi icon in the top bar, pick your network, enter the passphrase.
+#    Wi-Fi: tap the Wi-Fi icon in the side bar, pick your network, enter the passphrase.
 ssh cosmo@172.16.42.1                       # over the USB cable (left port); key-only
 penny-wifi-connect                          # on the phone: Wi-Fi from a terminal (lists, then
                                             #   penny-wifi-connect "Your Network")

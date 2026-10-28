@@ -1,11 +1,14 @@
-// PennyOS waybar for niri on the Cosmo (2160x1080 @ 1.75x -> 1234 logical px wide).
-// 40 px tall so the buttons are touch targets (~4.4 mm on this panel).
+// PennyOS waybar for niri on the Cosmo (2160x1080 @ 1.75x -> 1234x617 logical px).
+// Down the left edge: the screen is short and wide, so a side bar costs 3% of the
+// width where a top bar cost 6.5% of the height. 40 px wide so the buttons are touch
+// targets (~4.4 mm on this panel). Vertical, so no window title (it would not fit);
+// in a vertical bar modules-left is the top, modules-right the bottom.
 {
     "layer": "top",
-    "position": "top",
-    "height": 40,
+    "position": "left",
+    "width": 40,
     "spacing": 0,
-    "modules-left": ["custom/launcher", "niri/workspaces", "niri/window"],
+    "modules-left": ["custom/launcher", "niri/workspaces"],
     "modules-center": ["clock"],
     "modules-right": ["network", "custom/battery", "custom/overview", "custom/close", "custom/power"],
 
@@ -17,14 +20,11 @@
     "niri/workspaces": {
         "format": "{index}"
     },
-    "niri/window": {
-        "format": "{title}",
-        "max-length": 48,
-        "separate-outputs": true
-    },
     "clock": {
-        "format": "{:%H:%M}",
-        "format-alt": "{:%a %d %b  %H:%M}",
+        // turned to read up the bar, to fit its width; tap for the date
+        "format": "{:%I:%M %p}",
+        "format-alt": "{:%a %d %b}",
+        "rotate": 90,
         "tooltip": false
     },
     "network": {
@@ -42,6 +42,7 @@
     "custom/battery": {
         "exec": "/usr/local/bin/penny-bar-battery",
         "return-type": "json",
+        "justify": "center",
         "interval": 30
     },
     "custom/overview": {

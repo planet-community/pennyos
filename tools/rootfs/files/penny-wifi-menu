@@ -1,5 +1,6 @@
 #!/bin/sh
-# Wi-Fi menu for the bar: tapping the Wi-Fi icon drops this down from the top right.
+# Wi-Fi menu for the bar: tapping the Wi-Fi icon opens this beside it, at the
+# bottom left next to the bar.
 # Connected: network, signal, address, then disconnect / other networks / forget.
 # Not connected: the networks in range, strongest first, marked saved or open.
 # Asks for a passphrase for a new network and says whether joining worked and, if
@@ -14,8 +15,9 @@ pick() {
   n=$#; [ $n -gt 12 ] && n=12
   printf '%s\n' "$@" | fuzzel --dmenu $DROP --width 36 --lines $n --prompt "$p"
 }
-# a drop-down under the right end of the bar, not a centred launcher
-DROP="--anchor top-right --x-margin 8 --y-margin 4"
+# a pop-out beside the bottom of the bar (where the Wi-Fi icon is), not a centred
+# launcher; the layer shell places it clear of the bar
+DROP="--anchor bottom-left --x-margin 4 --y-margin 8"
 bars() {
   if [ "$1" -ge 75 ]; then echo "▂▄▆█"; elif [ "$1" -ge 50 ]; then echo "▂▄▆ "; elif [ "$1" -ge 25 ]; then echo "▂▄  "; else echo "▂   "; fi
 }
