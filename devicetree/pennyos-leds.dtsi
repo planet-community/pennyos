@@ -1,0 +1,45 @@
+// SPDX-License-Identifier: (GPL-2.0-only OR MIT)
+/*
+ * The rest of the LED expander (aw9523_led, i2c3 0x5b). The board DTS describes
+ * pins 0-5, 7-9 and 11-13; pins 6, 10 and 14 were left out, so with the LEDs
+ * active low and the pins driven low (see below) they sat on with nothing to
+ * switch them off.
+ *
+ * Pin 10 is the blue LED to the right of the fingerprint sensor (found on the
+ * phone, one pin at a time). Pins 6 and 14 light nothing visible; they are held
+ * off. Where every LED is: research/leds-and-sensors.md.
+ *
+ * The board's led_pins group asks for output-high on all 15 pins, but the 6.4
+ * aw9523 driver inverts that (PIN_CONFIG_OUTPUT falls through into the
+ * OUTPUT_ENABLE case, which negates the argument), so applying it drove every
+ * pin low: every LED on, after the hog below had already run. gpio-leds and the
+ * hog set the levels themselves, so the property is dropped.
+ */
+#include <dt-bindings/leds/common.h>
+
+/ {
+	leds-extra {
+		compatible = "gpio-leds";
+
+		led-fingerprint-right {
+			gpios = <&aw9523_led 10 GPIO_ACTIVE_LOW>;
+			function = LED_FUNCTION_INDICATOR;
+			function-enumerator = <2>;
+			color = <LED_COLOR_ID_BLUE>;
+			default-state = "off";
+		};
+	};
+};
+
+&led_pins {
+	/delete-property/ output-high;
+};
+
+&aw9523_led {
+	unused-led-pins-hog {
+		gpio-hog;
+		gpios = <6 GPIO_ACTIVE_LOW>, <14 GPIO_ACTIVE_LOW>;
+		output-low;	/* logically off: the pins are driven high */
+		line-name = "unused-led";
+	};
+};

@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=Diagnostics
+Comment=Switch the LEDs and watch the sensors, battery and temperatures
+Exec=/usr/local/bin/penny-diag
+Icon=utilities-system-monitor
+Terminal=false
+Categories=System;Monitor;
+Keywords=hardware;test;led;sensor;accelerometer;light;battery;temperature;

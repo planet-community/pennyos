@@ -8,7 +8,7 @@ R=/vol/root
 IMG=/work/out/debian-rootfs.img
 PKGS=systemd-sysv,udev,dbus,kmod,e2fsprogs,openssh-server,sudo,iproute2,iputils-ping,ca-certificates,curl,less,nano,procps,usbutils,i2c-tools,evtest,kbd,fbset,pciutils,file,strace
 # Desktop: Mesa (Panfrost), session plumbing, and the small tools niri's config uses.
-DESKTOP_PKGS="evtest libpam-systemd dbus-user-session libseat1 libinput10 libdisplay-info2 libgbm1 libegl1 libgles2 libgl1-mesa-dri libxkbcommon0 libpangocairo-1.0-0 xkb-data foot fuzzel waybar mako-notifier swaybg swaylock fonts-dejavu-core fonts-noto-core locales libnotify-bin wl-clipboard brightnessctl mesa-utils kmscube"
+DESKTOP_PKGS="evtest libpam-systemd dbus-user-session libseat1 libinput10 libdisplay-info2 libgbm1 libegl1 libgles2 libgl1-mesa-dri libxkbcommon0 libpangocairo-1.0-0 xkb-data foot fuzzel waybar mako-notifier swaybg swaylock fonts-dejavu-core fonts-noto-core locales libnotify-bin wl-clipboard brightnessctl mesa-utils kmscube python3-gi gir1.2-gtk-3.0"
 # Default look: fonts, icons, cursor, dark GTK theme; idle handling (swayidle).
 THEME_PKGS="libgtk-layer-shell0 fonts-inter-variable fonts-jetbrains-mono fonts-font-awesome papirus-icon-theme bibata-cursor-theme gnome-themes-extra swayidle"
 # Voice typing (Fn+Space, penny-dictate): recorder and mixer, and typing into the focused window.
@@ -155,7 +155,7 @@ if [ -x /work/out/niri/niri ]; then
     /work/tools/rootfs/files/penny-bar-close /work/tools/rootfs/files/penny-power-menu \
     /work/tools/rootfs/files/penny-sleep /work/tools/rootfs/files/penny-hold-esc \
     /work/tools/rootfs/files/penny-settings /work/tools/rootfs/files/penny-setup \
-    /work/tools/rootfs/files/penny-kbd-light "$R/usr/local/bin/"
+    /work/tools/rootfs/files/penny-kbd-light /work/tools/rootfs/files/penny-diag "$R/usr/local/bin/"
   # launcher tidy-up: a Settings entry, "Terminal" for foot, helper entries hidden
   # (/usr/local/share/applications overrides /usr/share/applications by file name)
   install -d "$R/usr/local/share/applications"

@@ -1,0 +1,23 @@
+// SPDX-License-Identifier: (GPL-2.0-only OR MIT)
+/*
+ * Sensors on the sensor bus (i2c1 at 0x11011000), as in the stock device tree.
+ *
+ * Found on the phone by reading chip IDs: STK3311-X light/proximity at 0x48 (PDT_ID
+ * 0x12) and a Voltafield AF6133E magnetometer at 0x0c (no mainline driver, not
+ * described here). The stock tree also lists a barometer at 0x77 and gyroscopes at
+ * 0x69/0x6b; nothing answers there.
+ *
+ * Not here: the accelerometer/gyroscope. Android reads it through the SCP sensor hub
+ * (MTK_ACCELHUB); from Linux, spi1 chip select 0 (stock "accelgyrosensor") returns
+ * only zeros. See research/leds-and-sensors.md.
+ *
+ * No interrupt: the stock tree polls the light sensor too, and the driver reads
+ * single values without it.
+ */
+
+&i2c1 {
+	light-sensor@48 {
+		compatible = "sensortek,stk3311";
+		reg = <0x48>;
+	};
+};

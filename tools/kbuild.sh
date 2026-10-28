@@ -183,7 +183,7 @@ PY
       rm -f $d/pennyos-*.dtsi
       sed -i -E "/^#include \"(pennyos-[a-z0-9-]+|mt6771-mtk-lk-compat)\.dtsi\"$/d" $d/mt6771-planet-cosmocom.dts
       cp /work/devicetree/*.dtsi $d/
-      for inc in pennyos-debug.dtsi pennyos-panel-ssd2092.dtsi pennyos-power-key.dtsi pennyos-touch-ssd20xx.dtsi pennyos-consys.dtsi pennyos-lid-keys.dtsi pennyos-sound.dtsi pennyos-kbd-backlight.dtsi pennyos-battery.dtsi mt6771-mtk-lk-compat.dtsi; do
+      for inc in pennyos-debug.dtsi pennyos-panel-ssd2092.dtsi pennyos-power-key.dtsi pennyos-touch-ssd20xx.dtsi pennyos-consys.dtsi pennyos-lid-keys.dtsi pennyos-sound.dtsi pennyos-kbd-backlight.dtsi pennyos-battery.dtsi pennyos-sensors.dtsi pennyos-leds.dtsi mt6771-mtk-lk-compat.dtsi; do
         grep -q "#include \"$inc\"" $d/mt6771-planet-cosmocom.dts || printf "\n#include \"%s\"\n" "$inc" >> $d/mt6771-planet-cosmocom.dts
       done
       tail -5 $d/mt6771-planet-cosmocom.dts'

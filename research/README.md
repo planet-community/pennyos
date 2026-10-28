@@ -14,6 +14,7 @@ what was believed at the time, and later files supersede them. What works now is
 - [wifi-scoping.md](wifi-scoping.md): the vendor Wi-Fi/Bluetooth stack and its port.
 - [bluetooth.md](bluetooth.md): Bluetooth, where it stops.
 - [power.md](power.md): current measurements, sleep, CPU idle and frequency.
+- [leds-and-sensors.md](leds-and-sensors.md): where each LED is, which sensors answer, the IMU on SPI.
 - [dt-gap-analysis.md](dt-gap-analysis.md): upstream device tree against the vendor's.
 
 **The phone and its Android side**

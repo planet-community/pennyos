@@ -46,6 +46,10 @@ MT6771 and Cosmo device trees on top of upstream.
 | Screen off | own panel driver + **userspace** `penny-screen` | Fn+Esc, or after 3 minutes idle. |
 | Sleep (s2idle) | mainline + **userspace** sleep hook and `penny-sleep` | Sleeps and wakes on a timer or the lid. Saves only about 20 mA over screen-off so far. See caveats below. |
 | Lid sensor | mainline driver (gpio-keys), `devicetree/pennyos-lid-keys.dtsi`, logind config | Closing the lid locks and sleeps, opening it wakes. |
+| Notification LEDs | mainline drivers (gpio-leds on the AW9523 expander, leds-mt6370-rgb), `devicetree/pennyos-leds.dtsi` | Every LED is in `/sys/class/leds`, switchable by the `video` group: Caps Lock key, above the outer display, both sides of and below the fingerprint sensor. LED names do not always match the colour seen; the map is in [leds-and-sensors](../research/leds-and-sensors.md). Nothing drives them yet (no charging or notification light). |
+| Camera flash as a torch | mainline driver (leds-mt6370-flash) | `white:flash-1` / `white:flash-2`, two channels into one LED. No camera to fire it. |
+| Light and proximity sensor | mainline driver (stk3310), `devicetree/pennyos-sensors.dtsi` | STK3311-X on i2c1. Lux and raw proximity in IIO. Not yet used for automatic brightness or blanking the screen in calls. |
+| Diagnostics app | **userspace** `penny-diag` | Switch each LED on and off; live sensor, temperature, battery and charger values. |
 | Desktop | niri (built from a pinned commit), waybar, fuzzel, mako, foot | `tools/rootfs/files/theme/` |
 | Login screen | greetd + gtkgreet inside a bare niri, **userspace** config | `tools/rootfs/files/greetd/` |
 
@@ -73,7 +77,9 @@ MT6771 and Cosmo device trees on top of upstream.
 | GPS, FM radio | Part of the same combo chip as Wi-Fi; not started. |
 | Cover display and its side button | Driven by a separate microcontroller; not started. |
 | Fingerprint reader | Not started. |
-| Sensors (accelerometer, light, ...) | Not started. |
+| Accelerometer and gyroscope | Nothing answers on SPI1, where the vendor tree puts it; Android reaches it through the SCP sensor hub. [leds-and-sensors](../research/leds-and-sensors.md) |
+| Magnetometer (AF6133E) | Answers on i2c1 0x0c; no mainline driver. |
+| Barometer | Nothing answers at the vendor tree's address. |
 | NFC | Not started. |
 | Battery temperature | The MT6370 ADC has the thermistor input (`ts_bat`); its conversion to degrees is not worked out. The gauge then could use the vendor tables for other temperatures. |
 | Novatek NT36672 panel variant | No panel entry with an init sequence and no touch driver. Such units boot with the bootloader's picture but this repo does not describe them. |
