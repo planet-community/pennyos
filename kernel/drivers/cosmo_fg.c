@@ -273,10 +273,14 @@ static int cosmo_fg_get_property(struct power_supply *psy, enum power_supply_pro
 		break;
 	case POWER_SUPPLY_PROP_CHARGE_FULL:
 	case POWER_SUPPLY_PROP_CHARGE_FULL_DESIGN:
-		val->intval = fg->bat->charge_full_design_uah;
-		break;
 	case POWER_SUPPLY_PROP_VOLTAGE_MIN_DESIGN:
-		val->intval = fg->bat->voltage_min_design_uv;
+		/* the supply is readable before probe has the battery data */
+		if (!fg->bat)
+			ret = -ENODATA;
+		else if (psp == POWER_SUPPLY_PROP_VOLTAGE_MIN_DESIGN)
+			val->intval = fg->bat->voltage_min_design_uv;
+		else
+			val->intval = fg->bat->charge_full_design_uah;
 		break;
 	case POWER_SUPPLY_PROP_STATUS:
 	case POWER_SUPPLY_PROP_CAPACITY:
@@ -330,6 +334,7 @@ static const struct power_supply_desc cosmo_fg_desc = {
 
 static int cosmo_fg_probe(struct platform_device *pdev)
 {
+	struct power_supply_battery_info *bat;
 	struct power_supply_config cfg = {};
 	struct device *dev = &pdev->dev;
 	struct platform_device *pmic;
@@ -372,13 +377,17 @@ static int cosmo_fg_probe(struct platform_device *pdev)
 	if (IS_ERR(fg->psy))
 		return dev_err_probe(dev, PTR_ERR(fg->psy), "register\n");
 
-	ret = power_supply_get_battery_info(fg->psy, &fg->bat);
+	ret = power_supply_get_battery_info(fg->psy, &bat);
 	if (ret)
 		return dev_err_probe(dev, ret, "monitored-battery\n");
-	if (fg->bat->charge_full_design_uah <= 0 || !fg->bat->ocv_table_size[0] ||
-	    fg->bat->factory_internal_resistance_uohm < 0)
+	if (bat->charge_full_design_uah <= 0 || !bat->ocv_table_size[0] ||
+	    bat->factory_internal_resistance_uohm < 0)
 		return dev_err_probe(dev, -EINVAL,
 				     "battery needs capacity, OCV table and resistance\n");
+	/* publish only valid data: the properties are readable from registration on */
+	mutex_lock(&fg->lock);
+	fg->bat = bat;
+	mutex_unlock(&fg->lock);
 
 	ret = devm_delayed_work_autocancel(dev, &fg->work, cosmo_fg_work);
 	if (ret)
