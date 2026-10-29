@@ -1,0 +1,333 @@
+#!/usr/bin/python3
+"""Low-memory warning: when memory runs out, names the app using the most and
+offers to close it, before the phone freezes.
+
+A popup over the desktop (gtk-layer-shell, so it does not take the keyboard from
+the app being typed into) with two buttons: "Close <app>", and "Not now", which
+stays quiet for SNOOZE_S unless memory gets worse. The popup is this same script
+run as `penny-memwatch --ask NAME SIZE`, a separate process, so GTK is only in
+memory while it is on screen. An app started from the desktop runs
+in its own systemd scope and is measured and closed as a whole (all of a browser's
+processes); in a terminal or an SSH session the single biggest process is named
+instead, so the terminal itself survives.
+
+Signs of trouble, read once a second from /proc (the kernel has no PSI, so there
+is no direct stall figure):
+  - thrashing: available memory under FULL_AVAIL while pages are read back from
+    swap at THRASH_PPS or more in THRASH_BUSY of the last THRASH_WINDOW_S seconds.
+    Measured: a runaway app reads back 20,000-80,000 pages a second, without a
+    pause. Switching back to an app that was swapped out is a burst of a second or
+    two, usually with memory to spare, and is not counted.
+  - nearly full: available memory under FULL_AVAIL and free swap under FULL_SWAP
+  - stalls: this loop's own 1 s tick arriving STALL_S late, twice within a minute,
+    while swap is in use
+earlyoom (/etc/default/earlyoom) and the kernel still close the biggest app on
+their own when memory is gone entirely; this is the earlier, asking step.
+
+Started with the niri session. `penny-memwatch --log` prints the figures each
+second instead (for tuning the thresholds).
+"""
+import collections
+import glob
+import os
+import re
+import signal
+import subprocess
+import sys
+import time
+
+TICK_S = 1.0
+THRASH_PPS = 4000  # 4 KiB pages per second, about 16 MB/s
+THRASH_WINDOW_S = 8
+THRASH_BUSY = 5
+FULL_AVAIL = 0.10
+FULL_SWAP = 0.20
+STALL_S = 2.0
+SNOOZE_S = 120
+# processes never offered for closing: the session itself
+AVOID = re.compile(r"^(niri.*|waybar|mako|fuzzel|swaybg|swayidle|swaylock|systemd.*|\(sd-pam\)|dbus-.*|sshd.*|"
+                   r"penny-.*|xdg-.*|gvfs.*|polkit.*|pipewire.*|wireplumber|greetd|gtkgreet)$")
+# apps that host other programs: name the program inside, not the host
+HOSTS = {"foot", "footclient", "foot-server", "kitty", "alacritty", "gnome-terminal", "xterm"}
+INTERPRETERS = re.compile(r"^(python[0-9.]*|perl|node|ruby|bash|sh|dash|lua.*)$")
+APP_DIRS = [os.path.expanduser("~/.local/share/applications"), "/usr/local/share/applications",
+            "/usr/share/applications", os.path.expanduser("~/.local/share/flatpak/exports/share/applications"),
+            "/var/lib/flatpak/exports/share/applications"]
+
+
+def meminfo():
+    m = {}
+    with open("/proc/meminfo") as f:
+        for line in f:
+            k, v = line.split(":", 1)
+            m[k] = int(v.split()[0])  # KiB
+    return m
+
+
+def vmstat(keys=("pswpin", "pswpout")):
+    v = {}
+    with open("/proc/vmstat") as f:
+        for line in f:
+            k, _, n = line.partition(" ")
+            if k in keys:
+                v[k] = int(n)
+    return v
+
+
+def unit_of(pid):
+    """(unit, under app.slice) of a process, from its cgroup path."""
+    with open(f"/proc/{pid}/cgroup") as f:
+        path = f.read().strip().split(":", 2)[2]
+    return path.rsplit("/", 1)[-1], "/app.slice/" in path
+
+
+def unescape(s):
+    return re.sub(r"\\x([0-9a-f]{2})", lambda m: chr(int(m.group(1), 16)), s)
+
+
+def app_id(unit):
+    """app-niri-foot-1880.scope -> foot; app-flatpak-org.mozilla.firefox-12.scope -> org.mozilla.firefox"""
+    m = re.match(r"^app-(?:niri-|flatpak-|gnome-)?(.+?)(?:-[0-9]+)?(?:@[^.]*)?\.(?:scope|service)$", unit)
+    return unescape(m.group(1)) if m else None
+
+
+def desktop_name(aid):
+    for d in APP_DIRS:
+        try:
+            with open(f"{d}/{aid}.desktop") as f:
+                for line in f:
+                    if line.startswith("Name="):
+                        return line[5:].strip()
+        except OSError:
+            continue
+    return aid
+
+
+def proc_name(pid, comm):
+    if INTERPRETERS.match(comm):
+        try:
+            with open(f"/proc/{pid}/cmdline", "rb") as f:
+                args = [a.decode(errors="replace") for a in f.read().split(b"\0") if a]
+            script = next((a for a in args[1:] if not a.startswith("-")), None)
+            if script:
+                return f"{comm} {os.path.basename(script)}"
+        except OSError:
+            pass
+    return comm
+
+
+def biggest():
+    """The app or process using the most memory: (name, KiB, kind, target)."""
+    uid = os.getuid()
+    me = os.getpid()
+    groups = collections.defaultdict(lambda: [0, None, None])  # key -> [KiB, name, (kind, target)]
+    for d in glob.glob("/proc/[0-9]*"):
+        pid = int(d[6:])
+        if pid == me:
+            continue
+        try:
+            st = {}
+            with open(d + "/status") as f:
+                for line in f:
+                    k, _, v = line.partition(":")
+                    st[k] = v.strip()
+            if int(st["Uid"].split()[0]) != uid:
+                continue
+            comm = st["Name"]
+            kib = int(st.get("RssAnon", "0 kB").split()[0]) + int(st.get("VmSwap", "0 kB").split()[0])
+            if not kib or AVOID.match(comm):
+                continue
+            unit, in_app = unit_of(pid)
+        except (OSError, ValueError, KeyError, IndexError):
+            continue
+        aid = app_id(unit) if in_app else None
+        if aid and aid not in HOSTS and not AVOID.match(aid):
+            g = groups[("unit", unit)]
+            g[1], g[2] = desktop_name(aid), ("unit", unit)
+        else:
+            g = groups[("pid", pid)]
+            g[1], g[2] = proc_name(pid, comm), ("pid", pid)
+        g[0] += kib
+    if not groups:
+        return None
+    kib, name, (kind, target) = max(groups.values(), key=lambda g: g[0])
+    return name, kib, kind, target
+
+
+def size(kib):
+    return f"{kib / 1048576:.1f} GB" if kib >= 1048576 else f"{kib // 1024} MB"
+
+
+def close(kind, target):
+    """SIGTERM, then SIGKILL if it is still there after a few seconds."""
+    if kind == "unit":
+        subprocess.run(["systemctl", "--user", "kill", "--signal=SIGTERM", target], stderr=subprocess.DEVNULL)
+        for _ in range(10):
+            time.sleep(0.5)
+            if not alive(kind, target):
+                return
+        subprocess.run(["systemctl", "--user", "kill", "--signal=SIGKILL", target], stderr=subprocess.DEVNULL)
+    else:
+        try:
+            os.kill(target, signal.SIGTERM)
+            for _ in range(10):
+                time.sleep(0.5)
+                os.kill(target, 0)
+            os.kill(target, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+
+
+def alive(kind, target):
+    if kind == "unit":
+        return subprocess.run(["systemctl", "--user", "is-active", "-q", target]).returncode == 0
+    try:
+        os.kill(target, 0)
+        return True
+    except ProcessLookupError:
+        return False
+
+
+def notify(text):
+    subprocess.Popen(["notify-send", "-a", "PennyOS", "-i", "dialog-information", "Memory", text],
+                     stderr=subprocess.DEVNULL)
+
+
+class Monitor:
+    def __init__(self):
+        self.pswpin = vmstat()["pswpin"]
+        self.busy = collections.deque(maxlen=THRASH_WINDOW_S)  # one bool per tick: heavy swap-in
+        self.stalls = collections.deque(maxlen=2)
+        self.last = time.monotonic()
+
+    def sample(self):
+        """Figures for this tick and the reason to warn, if there is one."""
+        now = time.monotonic()
+        late = now - self.last - TICK_S
+        self.last = now
+        m = meminfo()
+        pswpin = vmstat()["pswpin"]
+        pps = (pswpin - self.pswpin) / (TICK_S + max(late, 0))
+        self.pswpin = pswpin
+        self.busy.append(pps >= THRASH_PPS)
+        avail = m["MemAvailable"] / m["MemTotal"]
+        swap_free = m["SwapFree"] / m["SwapTotal"] if m["SwapTotal"] else 0
+        swap_used = 1 - swap_free if m["SwapTotal"] else 0
+        if late >= STALL_S and swap_used > 0.25:
+            self.stalls.append(now)
+        fig = f"avail={avail:.0%} swap_free={swap_free:.0%} swapin={pps:.0f}/s late={max(late, 0):.1f}s"
+        reason = None
+        if avail < FULL_AVAIL and sum(self.busy) >= THRASH_BUSY:
+            reason = "thrash"
+        elif avail < FULL_AVAIL and swap_free < FULL_SWAP:
+            reason = "full"
+        elif len(self.stalls) == 2 and self.stalls[1] - self.stalls[0] < 60:
+            reason = "stall"
+            self.stalls.clear()
+        return fig, reason, avail
+
+
+def main():
+    log = "--log" in sys.argv
+    # no mlockall (over the 8 MB RLIMIT_MEMLOCK); touching its pages every second
+    # keeps this loop in RAM anyway: never late in the thrashing tests
+    mon = Monitor()
+    menu = None  # (popup process, kind, target, name)
+    quiet_until = 0
+    snooze_avail = 0
+    while True:
+        time.sleep(TICK_S)
+        fig, reason, avail = mon.sample()
+        if log:
+            print(time.strftime("%T"), fig, reason or "", flush=True)
+            continue
+        if menu:
+            proc, kind, target, name = menu
+            if proc.poll() is None:
+                # closed meanwhile (by hand, earlyoom or the kernel): the question is moot
+                if not alive(kind, target):
+                    proc.terminate()
+                    proc.wait()
+                    menu = None
+                continue
+            choice = proc.stdout.read().strip()
+            menu = None
+            if choice == "close":
+                close(kind, target)
+                notify(f"Closed {name} to free memory.")
+                quiet_until = time.monotonic() + 10
+            else:
+                quiet_until, snooze_avail = time.monotonic() + SNOOZE_S, avail
+            continue
+        # snoozed, unless memory has got clearly worse since
+        if not reason or (time.monotonic() < quiet_until and avail > snooze_avail - 0.05):
+            continue
+        hog = biggest()
+        if not hog:
+            continue
+        name, kib, kind, target = hog
+        proc = subprocess.Popen([sys.argv[0], "--ask", name, size(kib)], stdout=subprocess.PIPE, text=True)
+        menu = (proc, kind, target, name)
+
+
+CSS = b"""
+window { background-color: rgba(22, 22, 30, 0.96); border: 2px solid #f7768e; border-radius: 10px; }
+.title { font-size: 15pt; font-weight: bold; color: #f7768e; }
+.body { font-size: 12pt; color: #c0caf5; }
+button { min-height: 48px; padding: 0 18px; font-size: 12pt; }
+"""
+
+
+def ask(name, used):
+    """The popup: prints "close" if Close was pressed, nothing otherwise."""
+    os.environ.setdefault("NO_AT_BRIDGE", "1")  # no accessibility bus in this session
+    import gi
+    gi.require_version("Gdk", "3.0")
+    gi.require_version("Gtk", "3.0")
+    from gi.repository import Gdk, Gtk
+    try:
+        gi.require_version("GtkLayerShell", "0.1")
+        from gi.repository import GtkLayerShell
+    except (ValueError, ImportError):
+        GtkLayerShell = None
+    css = Gtk.CssProvider()
+    css.load_from_data(CSS)
+    Gtk.StyleContext.add_provider_for_screen(Gdk.Screen.get_default(), css, Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION)
+    win = Gtk.Window(title="Memory is running out")
+    if GtkLayerShell:
+        GtkLayerShell.init_for_window(win)
+        GtkLayerShell.set_layer(win, GtkLayerShell.Layer.OVERLAY)
+        GtkLayerShell.set_keyboard_mode(win, GtkLayerShell.KeyboardMode.ON_DEMAND)
+    box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=10, border_width=18)
+    win.add(box)
+    for text, cls in (("Memory is running out", "title"),
+                      (f"{name} is using {used}. Close it before the phone freezes?", "body")):
+        label = Gtk.Label(label=text, xalign=0, wrap=True, max_width_chars=36)
+        label.get_style_context().add_class(cls)
+        box.pack_start(label, False, False, 0)
+    buttons = Gtk.Box(spacing=10, homogeneous=True, margin_top=6)
+    box.pack_start(buttons, False, False, 0)
+    close_btn = Gtk.Button(label=f"Close {name}")
+    close_btn.get_style_context().add_class("destructive-action")
+    later_btn = Gtk.Button(label="Not now")
+    buttons.pack_start(later_btn, True, True, 0)
+    buttons.pack_start(close_btn, True, True, 0)
+
+    def pick(_btn, answer):
+        if answer:
+            print(answer, flush=True)
+        Gtk.main_quit()
+    close_btn.connect("clicked", pick, "close")
+    later_btn.connect("clicked", pick, None)
+    win.connect("key-press-event", lambda _w, e: e.keyval == Gdk.KEY_Escape and pick(None, None))
+    win.connect("destroy", Gtk.main_quit)
+    win.show_all()
+    later_btn.grab_focus()  # Enter on a stray keypress must not close anything
+    Gtk.main()
+
+
+if __name__ == "__main__":
+    if sys.argv[1:2] == ["--ask"] and len(sys.argv) == 4:
+        ask(sys.argv[2], sys.argv[3])
+    else:
+        main()

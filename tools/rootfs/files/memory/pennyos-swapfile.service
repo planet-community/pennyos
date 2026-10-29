@@ -1,0 +1,15 @@
+[Unit]
+Description=Swap file on the eMMC, used only once zram is full
+# the root filesystem starts nearly full; it has room once it is grown
+After=pennyos-growfs.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+# created on first boot. Priority 10, below zram's 100: the kernel only writes here
+# once zram is full, so the eMMC is not worn by everyday swapping.
+ExecStart=/bin/sh -c '[ -f /swapfile ] || { fallocate -l 1G /swapfile.new && chmod 600 /swapfile.new && mkswap -q /swapfile.new && mv /swapfile.new /swapfile; }; exec swapon -p 10 /swapfile'
+ExecStop=/sbin/swapoff /swapfile
+
+[Install]
+WantedBy=multi-user.target

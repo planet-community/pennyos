@@ -161,6 +161,8 @@ workspace is a separate strip, stacked above and below.
 (on while typing, and for how long after), and the first-time
 setup (name, password, language, keyboard, time zone). **Wi-Fi** is also one tap away: the icon in the bar on the left
 edge. From a computer, `ssh` in over the USB cable (left port) as shown above.
+When memory runs out, a popup names the app using the most and offers to close it before the
+phone freezes.
 
 ---
 

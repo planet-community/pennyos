@@ -1,0 +1,9 @@
+# pennyos: earlyoom closes the biggest app before low memory freezes the desktop
+# (the kernel's own OOM killer only acts after a long stall). It acts once available
+# memory is under 15 % AND free swap is under 10 %: only when zram is full and the swap
+# file on the eMMC is nearly full too. The memory figure is high because, once swap is
+# full, MemAvailable still counts several hundred MB that cannot really be freed.
+# --avoid: the session itself (compositor, login, bar, radio, ssh); losing one of
+# these loses the desktop. --prefer: voice typing, which restarts on the next use.
+# No quotes around the patterns: systemd splits these arguments at spaces only.
+EARLYOOM_ARGS="-m 15 -s 10 -r 3600 --avoid ^(niri|greetd|gtkgreet|systemd.*|sshd|dbus-.*|waybar|penny-.*|wpa_supplicant)$ --prefer ^whisper-cli$"
