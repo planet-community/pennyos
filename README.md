@@ -99,9 +99,9 @@ penny-wifi-connect                          # on the phone: Wi-Fi from a termina
 
 What `build-all.sh` runs, if you want the pieces: `tools/kbuild.sh` (kernel: `image`,
 `src`, `patch`, `drivers-sync`, `dts-sync`, `config slim debug rootfs`, `modules`),
-`tools/conn-setup.sh` (radio stack), `tools/rootfs/build-niri.sh` and
-`tools/rootfs/build-whisper.sh` (desktop and voice typing, each pinned to a tag and
-commit), `tools/splash/build.sh` (start-up animation), `tools/mkboot.sh rootfs` (boot
+`tools/conn-setup.sh` (radio stack), `tools/rootfs/build-niri.sh`,
+`tools/rootfs/build-fuzzel.sh` and `tools/rootfs/build-whisper.sh` (desktop, launcher
+and menus with touch, and voice typing, each pinned to a tag and commit), `tools/splash/build.sh` (start-up animation), `tools/mkboot.sh rootfs` (boot
 image, after checking the DTB against the bootloader's rules) and `tools/mkrootfs.sh`
 (Debian image). Each step reuses its Docker volume, so a second run is much faster.
 The kernel and radio trees were rebuilt from a pristine clone with these scripts and

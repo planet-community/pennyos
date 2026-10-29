@@ -178,6 +178,14 @@ if [ -x /work/out/niri/niri ]; then
   else
     echo "WARNING: no out/splash/penny-splash - the desktop starts without its animation"
   fi
+  # fuzzel with touch (tools/rootfs/build-fuzzel.sh), ahead of Debian's 1.12 in PATH;
+  # the package stays installed for its libraries
+  if [ -x /work/out/fuzzel/fuzzel ]; then
+    echo "==> installing fuzzel $(cat /work/out/fuzzel/TAG 2>/dev/null)"
+    install -m 755 /work/out/fuzzel/fuzzel "$R/usr/local/bin/fuzzel"
+  else
+    echo "WARNING: no out/fuzzel/fuzzel - the launcher and menus will not respond to touch"
+  fi
   # voice typing: whisper.cpp from out/whisper (tools/rootfs/build-whisper.sh) and its
   # model; penny-dictate says so if they are missing
   chroot "$R" apt-get install -y --no-install-recommends $VOICE_PKGS
