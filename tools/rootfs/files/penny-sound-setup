@@ -2,24 +2,37 @@
 # Route playback to the Cosmo's speakers (card "cosmo", kernel/drivers/cosmo-sound.c).
 #
 # Called by udev when the card appears, after alsactl has restored the saved mixer
-# state (90-alsa-restore.rules), so the routing is always right and the volume the
-# user last left is kept. The starting volume is set once.
+# state (90-alsa-restore.rules).
 #
 # Playback stream DL1 -> SoC DAC link -> MT6358 DAC. The codec's headphone muxes in
 # "LoudSPK Playback" are what power line out L, which feeds the speaker amplifiers;
 # the card's "Speakers" widget switches the amplifiers on while something plays.
-STAMP=/var/lib/pennyos/sound-defaults
+#
+# Volume is the software "Master" control of the default device (/etc/asound.conf);
+# line out stays at full gain. ALSA creates a softvol control only when its device
+# is first opened, after alsactl restore has run, so open it once with a few silent
+# samples and restore again for the saved level. The starting level is set once.
+STAMP=/var/lib/pennyos/volume-default
 m() { amixer -q -c cosmo cset name="$1" "$2"; }
+
+head -c 64 /dev/zero | aplay -q -D default -t raw -f S16_LE -r 48000 -c 2 2>/dev/null
+alsactl restore cosmo 2>/dev/null
 
 m "ADDA_DL_CH1 DL1_CH1" on
 m "ADDA_DL_CH2 DL1_CH2" on
 m "HPL Mux" "LoudSPK Playback"
 m "HPR Mux" "LoudSPK Playback"
-m "Speakers Switch" on
+m "Lineout Volume" 18,18
+# capture, as penny-dictate sets it: main microphone -> left preamplifier ->
+# left ADC -> capture channel 1; without it the capture device fails to start
+m "Mic Type Mux" ACC
+m "PGA L Mux" AIN0
+m "ADC L Mux" "Left Preamplifier"
+m "UL1_CH1 ADDA_UL_CH1" on
 
 if [ ! -e "$STAMP" ]; then
-  # 0..18 is -10..+8 dB; 18 is loud on these speakers
-  m "Lineout Volume" 12,12
+  amixer -q -M -c cosmo sset Master 40%
+  m "Speakers Switch" on
   mkdir -p "${STAMP%/*}" && touch "$STAMP"
 fi
 exit 0

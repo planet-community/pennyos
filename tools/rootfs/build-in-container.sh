@@ -174,6 +174,7 @@ if [ -x /work/out/niri/niri ]; then
   # speakers: mixer routing when the sound card appears (needs amixer from alsa-utils)
   install -m 755 /work/tools/rootfs/files/penny-sound-setup "$R/usr/local/bin/"
   install -m 644 /work/tools/rootfs/files/93-pennyos-sound.rules "$R/etc/udev/rules.d/"
+  install -m 644 /work/tools/rootfs/files/asound.conf "$R/etc/asound.conf"
   if [ -x /work/out/whisper/whisper-cli ] && ls /work/out/whisper/ggml-*.bin >/dev/null 2>&1; then
     echo "==> installing whisper.cpp $(cat /work/out/whisper/TAG 2>/dev/null)"
     install -m 755 /work/out/whisper/whisper-cli "$R/usr/local/bin/"
