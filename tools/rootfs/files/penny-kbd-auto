@@ -1,0 +1,210 @@
+#!/usr/bin/python3
+"""Automatic keyboard light: typing lights the keyboard, which goes dark again
+TIMEOUT seconds after the last key.
+
+Settings in ~/.config/pennyos/keyboard-light (written by `penny-kbd-light menu`,
+Settings > Keyboard light), read again whenever they change:
+  AUTO=on|off   light while typing (default on)
+  TIMEOUT=15    seconds the light stays on after the last key
+
+The level is whatever was last set with Fn+Shift+N/B (penny-kbd-light), half
+brightness to start with. A light switched off by hand stays off while typing,
+until it is switched on again. Closing the lid switches the light off and keys
+are ignored while it is closed (the matrix reads garbage then); with AUTO off,
+opening the lid brings back a light the lid switched off.
+
+Started with the niri session; reads the keyboard and the lid switch, so needs
+the `input` group, and writes the LED, so needs `video` (90-pennyos-backlight.rules).
+The keyboard's input device is created anew after every sleep (penny-sleep-hook
+rebinds the driver), so it is looked up again whenever it goes away.
+"""
+import errno
+import fcntl
+import glob
+import os
+import select
+import struct
+import time
+
+CONF = os.path.expanduser("~/.config/pennyos/keyboard-light")
+LEVEL_FILE = os.path.expanduser("~/.local/state/pennyos/keyboard-light-level")
+DEFAULTS = {"AUTO": "on", "TIMEOUT": "15"}
+EVENT = struct.Struct("qqHHi")  # struct input_event on arm64
+EV_KEY, EV_SW, SW_LID = 1, 5, 0
+EVIOCGSW_8 = (2 << 30) | (8 << 16) | (ord("E") << 8) | 0x1B
+POLL_S = 2.0  # how often settings, the LED and a missing keyboard are looked at
+
+
+def read_conf():
+    conf = dict(DEFAULTS)
+    try:
+        with open(CONF) as f:
+            for line in f:
+                k, _, v = line.strip().partition("=")
+                if k in conf and v:
+                    conf[k] = v
+    except OSError:
+        pass
+    try:
+        timeout = max(1, int(conf["TIMEOUT"]))
+    except ValueError:
+        timeout = int(DEFAULTS["TIMEOUT"])
+    return conf["AUTO"] == "on", timeout
+
+
+def conf_mtime():
+    try:
+        return os.stat(CONF).st_mtime
+    except OSError:
+        return 0
+
+
+def find_event(name):
+    for d in glob.glob("/sys/class/input/event*"):
+        try:
+            with open(d + "/device/name") as f:
+                if f.read().strip() == name:
+                    return os.open("/dev/input/" + os.path.basename(d), os.O_RDONLY | os.O_NONBLOCK)
+        except OSError:
+            continue
+    return None
+
+
+class Led:
+    def __init__(self):
+        found = glob.glob("/sys/class/leds/*kbd_backlight")
+        self.path = found[0] if found else None
+        self.max = int(open(self.path + "/max_brightness").read()) if self.path else 0
+
+    def get(self):
+        with open(self.path + "/brightness") as f:
+            return int(f.read())
+
+    def set(self, value):
+        with open(self.path + "/brightness", "w") as f:
+            f.write(str(value))
+
+
+def load_level(led):
+    try:
+        v = int(open(LEVEL_FILE).read())
+        if 0 < v <= led.max:
+            return v
+    except (OSError, ValueError):
+        pass
+    return led.max // 2
+
+
+def save_level(level):
+    try:
+        os.makedirs(os.path.dirname(LEVEL_FILE), exist_ok=True)
+        with open(LEVEL_FILE, "w") as f:
+            f.write(str(level))
+    except OSError:
+        pass
+
+
+def lid_closed(fd):
+    if fd is None:
+        return False
+    buf = bytearray(8)
+    try:
+        fcntl.ioctl(fd, EVIOCGSW_8, buf)
+    except OSError:
+        return False
+    return bool(buf[0] & (1 << SW_LID))
+
+
+def main():
+    led = Led()
+    if not led.path:
+        return
+    auto, timeout = read_conf()
+    mtime = conf_mtime()
+    level = load_level(led)
+    cur = led.get()
+    if cur:
+        level = cur
+    # dark at start: treat as our own doing, so typing lights it
+    self_off = cur == 0
+    deadline = time.monotonic() + timeout if cur else None
+    kbd = find_event("keyboard")
+    lid = find_event("cosmo-gpio-keys")
+    closed = lid_closed(lid)
+
+    def light_off():
+        nonlocal level, self_off, deadline
+        c = led.get()
+        if c:
+            level = c
+            save_level(level)
+            led.set(0)
+            self_off = True
+        deadline = None
+
+    while True:
+        now = time.monotonic()
+        wait = POLL_S if deadline is None else max(0, min(POLL_S, deadline - now))
+        fds = [f for f in (kbd, lid) if f is not None]
+        ready = select.select(fds, [], [], wait)[0]
+        typed = False
+        for fd in ready:
+            try:
+                data = os.read(fd, EVENT.size * 64)
+            except OSError as e:
+                if e.errno in (errno.ENODEV, errno.EIO):
+                    os.close(fd)
+                    if fd == kbd:
+                        kbd = None
+                    else:
+                        lid = None
+                continue
+            for i in range(0, len(data) - EVENT.size + 1, EVENT.size):
+                _, _, etype, code, value = EVENT.unpack_from(data, i)
+                if fd == kbd and etype == EV_KEY and value in (1, 2):
+                    typed = True
+                elif fd == lid and etype == EV_SW and code == SW_LID:
+                    closed = bool(value)
+                    if closed:
+                        light_off()
+                    elif not auto and self_off:
+                        led.set(level)
+                        self_off = False
+
+        if conf_mtime() != mtime:
+            mtime = conf_mtime()
+            auto, timeout = read_conf()
+            if deadline is not None:
+                deadline = time.monotonic() + timeout
+        if kbd is None:
+            kbd = find_event("keyboard")
+        if lid is None:
+            lid = find_event("cosmo-gpio-keys")
+            closed = lid_closed(lid)
+
+        now = time.monotonic()
+        cur = led.get()
+        if cur:
+            # on, whoever switched it on: remember the level, keep the timeout running
+            level = cur
+            self_off = False
+            if auto and deadline is None:
+                deadline = now + timeout
+        elif not self_off:
+            deadline = None  # switched off by hand (or by the sleep hook): leave it
+        if not auto:
+            deadline = None
+            continue
+        if typed and not closed:
+            if cur == 0 and self_off:
+                led.set(level)
+                self_off = False
+                deadline = now + timeout
+            elif cur:
+                deadline = now + timeout
+        elif deadline is not None and now >= deadline:
+            light_off()
+
+
+if __name__ == "__main__":
+    main()
