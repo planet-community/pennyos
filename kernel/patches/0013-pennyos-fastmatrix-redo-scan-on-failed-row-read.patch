@@ -1,0 +1,33 @@
+diff --git a/drivers/input/keyboard/gpio_fastmatrix.c b/drivers/input/keyboard/gpio_fastmatrix.c
+--- a/drivers/input/keyboard/gpio_fastmatrix.c
++++ b/drivers/input/keyboard/gpio_fastmatrix.c
+@@ -39,6 +39,7 @@
+ #define GKB_MAX_KEYS_DOWN	10
+ #define GKB_GHOST_RESCAN_MS	200
+ #define GKB_PRESS_SCANS		3	/* history depth, the most that can be asked for */
++#define GKB_READ_RETRY_MS	5	/* a scan whose row read failed is redone after */
+ 
+ /*
+  * How many earlier scans must also show a key before its press is reported
+@@ -206,6 +207,21 @@
+ 						     gkb->row_gpios->desc,
+ 						     gkb->row_gpios->info,
+ 						     &row_values);
++		/*
++		 * pennyos: on a failed read row_values still holds the previous
++		 * column's rows, which would be taken as this column's keys: a
++		 * phantom key and a lost one. Drop the whole scan and redo it soon,
++		 * row interrupts still off.
++		 */
++		if (ret < 0) {
++			dev_warn_ratelimited(gkb->dev, "row read failed: %d\n", ret);
++			deactivate_one_column(gkb, col);
++			activate_all_cols(gkb);
++			kfree(new_state);
++			queue_delayed_work(system_highpri_wq, &gkb->work,
++					   msecs_to_jiffies(GKB_READ_RETRY_MS));
++			return;
++		}
+ 		/* only the row bits are ours; the rest of the word is not written */
+ 		new_state[col] = row_values & GENMASK(gkb->row_gpios->ndescs - 1, 0);
+ 		keymask |= new_state[col];

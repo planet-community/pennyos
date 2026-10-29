@@ -155,7 +155,7 @@ if [ -x /work/out/niri/niri ]; then
     /work/tools/rootfs/files/penny-bar-close /work/tools/rootfs/files/penny-power-menu \
     /work/tools/rootfs/files/penny-sleep /work/tools/rootfs/files/penny-hold-esc \
     /work/tools/rootfs/files/penny-settings /work/tools/rootfs/files/penny-setup \
-    /work/tools/rootfs/files/penny-kbd-light /work/tools/rootfs/files/penny-diag "$R/usr/local/bin/"
+    /work/tools/rootfs/files/penny-kbd-light /work/tools/rootfs/files/penny-volume /work/tools/rootfs/files/penny-diag "$R/usr/local/bin/"
   # launcher tidy-up: a Settings entry, "Terminal" for foot, helper entries hidden
   # (/usr/local/share/applications overrides /usr/share/applications by file name)
   install -d "$R/usr/local/share/applications"
@@ -171,6 +171,9 @@ if [ -x /work/out/niri/niri ]; then
   # model; penny-dictate says so if they are missing
   chroot "$R" apt-get install -y --no-install-recommends $VOICE_PKGS
   install -m 755 /work/tools/rootfs/files/penny-dictate "$R/usr/local/bin/"
+  # speakers: mixer routing when the sound card appears (needs amixer from alsa-utils)
+  install -m 755 /work/tools/rootfs/files/penny-sound-setup "$R/usr/local/bin/"
+  install -m 644 /work/tools/rootfs/files/93-pennyos-sound.rules "$R/etc/udev/rules.d/"
   if [ -x /work/out/whisper/whisper-cli ] && ls /work/out/whisper/ggml-*.bin >/dev/null 2>&1; then
     echo "==> installing whisper.cpp $(cat /work/out/whisper/TAG 2>/dev/null)"
     install -m 755 /work/out/whisper/whisper-cli "$R/usr/local/bin/"

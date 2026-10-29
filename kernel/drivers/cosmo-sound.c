@@ -9,10 +9,17 @@
  * The codec's analogue outputs reach the speakers and the headphone jack through
  * external amplifiers and switches that are each controlled by one GPIO (vendor
  * device tree: extamp, extamp2, headphone_en, headphone_cs). There is no RT5509
- * on this phone, whatever the vendor kernel config suggests. Each GPIO is a
- * mixer switch here.
+ * on this phone, whatever the vendor kernel config suggests.
+ *
+ * Speakers: codec line out L into two amplifiers, enabled by extamp and extamp2.
+ * The codec's "LoudSPK Playback" headphone mux setting is what powers line out
+ * fully (charge pump and regulators); the plain "LOL Mux" path does not. The
+ * amplifiers pick their mode from the number of rising edges on the enable pin;
+ * Planet's kernel (Ext_Speaker_Amp_Change) sends 3 and waits 25 ms, as does the
+ * "Speakers" widget here. The headphone GPIOs are still plain mixer switches.
  * Modelled on mt8183-mt6358-ts3a227-max98357.c.
  */
+#include <linux/delay.h>
 #include <linux/gpio/consumer.h>
 #include <linux/module.h>
 #include <linux/of.h>
@@ -106,9 +113,63 @@ static int cosmo_gpio_put(struct snd_kcontrol *kcontrol,
 	  .info = snd_ctl_boolean_mono_info, .get = cosmo_gpio_get, \
 	  .put = cosmo_gpio_put, .private_value = xindex }
 
+/* vendor amplifier mode, as rising edges on the enable pins */
+#define COSMO_SPK_AMP_MODE	3
+#define COSMO_SPK_WARM_UP_MS	25
+
+static void cosmo_spk_amps_pulse(struct cosmo_sound_priv *priv, int edges)
+{
+	unsigned long flags;
+	int i;
+
+	/* the amplifiers count edges; a long gap from an interrupt reads as "off" */
+	local_irq_save(flags);
+	for (i = 0; i < edges; i++) {
+		gpiod_set_value(priv->gpio[COSMO_GPIO_EXTAMP], 0);
+		gpiod_set_value(priv->gpio[COSMO_GPIO_EXTAMP2], 0);
+		udelay(2);
+		gpiod_set_value(priv->gpio[COSMO_GPIO_EXTAMP], 1);
+		gpiod_set_value(priv->gpio[COSMO_GPIO_EXTAMP2], 1);
+		udelay(2);
+	}
+	local_irq_restore(flags);
+}
+
+static int cosmo_spk_event(struct snd_soc_dapm_widget *w,
+			   struct snd_kcontrol *kcontrol, int event)
+{
+	struct snd_soc_card *card = w->dapm->card;
+	struct cosmo_sound_priv *priv = snd_soc_card_get_drvdata(card);
+
+	switch (event) {
+	case SND_SOC_DAPM_POST_PMU:
+		/* off long enough to forget the previous mode, then select it */
+		gpiod_set_value(priv->gpio[COSMO_GPIO_EXTAMP], 0);
+		gpiod_set_value(priv->gpio[COSMO_GPIO_EXTAMP2], 0);
+		usleep_range(1000, 2000);
+		cosmo_spk_amps_pulse(priv, COSMO_SPK_AMP_MODE);
+		msleep(COSMO_SPK_WARM_UP_MS);
+		break;
+	case SND_SOC_DAPM_PRE_PMD:
+		gpiod_set_value(priv->gpio[COSMO_GPIO_EXTAMP], 0);
+		gpiod_set_value(priv->gpio[COSMO_GPIO_EXTAMP2], 0);
+		udelay(500);
+		break;
+	}
+	return 0;
+}
+
+static const struct snd_soc_dapm_widget cosmo_sound_widgets[] = {
+	SND_SOC_DAPM_SPK("Speakers", cosmo_spk_event),
+};
+
+static const struct snd_soc_dapm_route cosmo_sound_routes[] = {
+	/* line out L, powered through the codec's HPL Mux "LoudSPK Playback" */
+	{ "Speakers", NULL, "LINEOUT L HSSPK" },
+};
+
 static const struct snd_kcontrol_new cosmo_sound_controls[] = {
-	COSMO_GPIO_SWITCH("Ext Amp Switch", COSMO_GPIO_EXTAMP),
-	COSMO_GPIO_SWITCH("Ext Amp 2 Switch", COSMO_GPIO_EXTAMP2),
+	SOC_DAPM_PIN_SWITCH("Speakers"),
 	COSMO_GPIO_SWITCH("Headphone Enable Switch", COSMO_GPIO_HP_EN),
 	COSMO_GPIO_SWITCH("Headphone Select Switch", COSMO_GPIO_HP_CS),
 };
@@ -118,6 +179,10 @@ static struct snd_soc_card cosmo_sound_card = {
 	.owner = THIS_MODULE,
 	.controls = cosmo_sound_controls,
 	.num_controls = ARRAY_SIZE(cosmo_sound_controls),
+	.dapm_widgets = cosmo_sound_widgets,
+	.num_dapm_widgets = ARRAY_SIZE(cosmo_sound_widgets),
+	.dapm_routes = cosmo_sound_routes,
+	.num_dapm_routes = ARRAY_SIZE(cosmo_sound_routes),
 	.dai_link = cosmo_sound_dai_links,
 	.num_links = ARRAY_SIZE(cosmo_sound_dai_links),
 };

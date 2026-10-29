@@ -9,6 +9,8 @@ padding=12
 margin=10
 width=340
 default-timeout=6000
+# bar for notifications with a value hint (penny-volume)
+progress-color=over #7aa2f7
 icon-path=/usr/share/icons/Papirus-Dark
 
 [urgency=high]
