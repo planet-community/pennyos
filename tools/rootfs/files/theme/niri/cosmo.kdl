@@ -68,6 +68,8 @@ spawn-at-startup "/usr/local/bin/penny-splash"
 spawn-at-startup "/usr/local/bin/penny-hold-esc"
 // typing lights the keyboard, off again a while after the last key (Settings > Keyboard light)
 spawn-at-startup "/usr/local/bin/penny-kbd-auto"
+// low memory: offers to close the app using the most, before the phone freezes
+spawn-at-startup "/usr/local/bin/penny-memwatch"
 // asks for the password when an app (GNOME Software, Thunar mounts) needs admin rights
 spawn-at-startup "/usr/libexec/polkit-mate-authentication-agent-1"
 spawn-at-startup "swaybg" "-m" "fill" "-i" "/usr/local/share/pennyos/wallpaper.png"

@@ -15,6 +15,9 @@ THEME_PKGS="libgtk-layer-shell0 fonts-inter-variable fonts-jetbrains-mono fonts-
 VOICE_PKGS="alsa-utils wtype"
 # Network: Wi-Fi tools, regulatory database, DNS for networkd-managed links.
 NET_PKGS="iw wpasupplicant wireless-regdb systemd-resolved polkitd"
+# Low memory: zram swap, closing the biggest app before the desktop freezes, and
+# the Python bindings for the penny-memwatch popup (libgtk-layer-shell0 is in THEME_PKGS).
+MEM_PKGS="systemd-zram-generator earlyoom gir1.2-gtklayershell-0.1"
 
 apt-get update -qq >/dev/null
 apt-get install -y -qq debootstrap e2fsprogs kmod >/dev/null
@@ -97,7 +100,7 @@ EOF
 echo "==> desktop packages"
 cp /etc/resolv.conf "$R/etc/resolv.conf"
 chroot "$R" apt-get update -qq
-DEBIAN_FRONTEND=noninteractive chroot "$R" apt-get install -y -qq --no-install-recommends $DESKTOP_PKGS $THEME_PKGS $NET_PKGS >/dev/null
+DEBIAN_FRONTEND=noninteractive chroot "$R" apt-get install -y -qq --no-install-recommends $DESKTOP_PKGS $THEME_PKGS $NET_PKGS $MEM_PKGS >/dev/null
 
 # keyboard layouts for the Cosmo Fn layer (selected in the niri config). In the
 # system directory: a compositor that is already running does not pick up /etc/xkb.
@@ -109,8 +112,15 @@ install -m 644 /work/tools/rootfs/files/92-pennyos-wifi.rules "$R/etc/udev/rules
 install -m 755 /work/tools/rootfs/files/penny-charge-setup "$R/usr/local/bin/"
 install -m 755 /work/tools/rootfs/files/penny-thermal "$R/usr/local/bin/"
 install -m 644 /work/tools/rootfs/files/penny-thermal.service "$R/etc/systemd/system/"
+# Memory pressure: zram first, then a 1 GiB swap file on the eMMC, and earlyoom
+# closing the biggest app well before the kernel's OOM killer would (tools/rootfs/files/memory/).
+M=/work/tools/rootfs/files/memory
+install -m 644 $M/zram-generator.conf "$R/etc/systemd/zram-generator.conf"
+install -D -m 644 $M/90-pennyos-memory.conf "$R/etc/sysctl.d/90-pennyos-memory.conf"
+install -m 644 $M/pennyos-swapfile.service "$R/etc/systemd/system/"
+install -m 644 $M/earlyoom "$R/etc/default/earlyoom"
 
-chroot "$R" systemctl enable systemd-networkd ssh pennyos-growfs.service penny-thermal.service >/dev/null 2>&1
+chroot "$R" systemctl enable systemd-networkd ssh pennyos-growfs.service penny-thermal.service pennyos-swapfile.service earlyoom.service >/dev/null 2>&1
 
 # User: cosmo / cosmo (sudo) - a known default so the on-device console works out
 # of the box. `penny-setup` (Settings > First-time setup) changes name and password.
@@ -155,7 +165,8 @@ if [ -x /work/out/niri/niri ]; then
     /work/tools/rootfs/files/penny-bar-close /work/tools/rootfs/files/penny-power-menu \
     /work/tools/rootfs/files/penny-sleep /work/tools/rootfs/files/penny-hold-esc \
     /work/tools/rootfs/files/penny-settings /work/tools/rootfs/files/penny-setup \
-    /work/tools/rootfs/files/penny-kbd-light /work/tools/rootfs/files/penny-kbd-auto /work/tools/rootfs/files/penny-volume /work/tools/rootfs/files/penny-diag "$R/usr/local/bin/"
+    /work/tools/rootfs/files/penny-kbd-light /work/tools/rootfs/files/penny-kbd-auto /work/tools/rootfs/files/penny-volume /work/tools/rootfs/files/penny-diag \
+    /work/tools/rootfs/files/penny-memwatch "$R/usr/local/bin/"
   # launcher tidy-up: a Settings entry, "Terminal" for foot, helper entries hidden
   # (/usr/local/share/applications overrides /usr/share/applications by file name)
   install -d "$R/usr/local/share/applications"
