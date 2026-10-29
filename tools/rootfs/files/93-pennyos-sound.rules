@@ -1,0 +1,2 @@
+# Speaker routing for the Cosmo sound card, after alsactl restore (90-alsa-restore.rules)
+ACTION=="add", SUBSYSTEM=="sound", KERNEL=="controlC*", ATTR{device/id}=="cosmo", RUN+="/usr/local/bin/penny-sound-setup"

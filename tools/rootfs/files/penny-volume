@@ -1,0 +1,45 @@
+#!/bin/sh
+# Speaker volume: penny-volume up | down | mute
+#
+# Fn+V / Fn+C / Fn+X, as printed on the keyboard. Steps the codec's line out gain
+# ("Lineout Volume", 0..18 = -10..+8 dB) in 2 dB steps; below the lowest step the
+# speakers are switched off ("Speakers Switch"), since -10 dB is still loud. Shows
+# the level as a notification with a bar, replaced on each press. alsactl saves
+# the level at shutdown.
+CARD=cosmo
+MAX=18
+STEP=2
+get() { amixer -c $CARD cget name="$1" | sed -n 's/^ *: values=\([^,]*\).*/\1/p'; }
+set_() { amixer -q -c $CARD cset name="$1" "$2"; }
+
+vol=$(get "Lineout Volume")
+on=$(get "Speakers Switch")
+[ -n "$vol" ] && [ -n "$on" ] || { echo "no sound card" >&2; exit 1; }
+
+case "$1" in
+  up)
+    if [ "$on" = off ]; then set_ "Speakers Switch" on; vol=0
+    else vol=$(( vol + STEP )); [ $vol -gt $MAX ] && vol=$MAX; fi
+    on=on ;;
+  down)
+    if [ "$on" = on ] && [ "$vol" -le 0 ]; then on=off
+    else vol=$(( vol - STEP )); [ $vol -lt 0 ] && vol=0; fi ;;
+  mute)
+    [ "$on" = on ] && on=off || on=on ;;
+  *) echo "usage: $0 up|down|mute" >&2; exit 1 ;;
+esac
+set_ "Lineout Volume" "$vol,$vol"
+set_ "Speakers Switch" "$on"
+
+# 10 % per step, the bottom step showing 10 % so that 0 % means muted
+if [ "$on" = off ]; then pct=0; icon=audio-volume-muted; text="Muted"
+else
+  pct=$(( (vol + STEP) * 100 / (MAX + STEP) ))
+  if [ $pct -le 30 ]; then icon=audio-volume-low
+  elif [ $pct -le 70 ]; then icon=audio-volume-medium
+  else icon=audio-volume-high; fi
+  text="$pct %"
+fi
+notify-send -t 1500 -a penny-volume -i "$icon" -h int:value:$pct \
+  -h string:x-canonical-private-synchronous:penny-volume "Volume" "$text" 2>/dev/null
+exit 0

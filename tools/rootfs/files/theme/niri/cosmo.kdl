@@ -90,8 +90,8 @@ binds {
     // Esc. allow-when-locked: works on the lock screen.
     ISO_Level3_Shift+Escape allow-when-locked=true hotkey-overlay-title="Screen off/on" { spawn "/usr/local/bin/penny-screen" "toggle"; }
     // The other function legends on the keyboard: overview (A), app launcher (D),
-    // screenshot (R). Volume and media keys (C V X W E S T) are left for when audio
-    // works; the layout already sends the right XF86 symbols for them.
+    // screenshot (R). Media keys (W E S T) are left for later; the layout already
+    // sends the right XF86 symbols for them.
     ISO_Level3_Shift+A repeat=false { toggle-overview; }
     ISO_Level3_Shift+D repeat=false hotkey-overlay-title="Run an Application: fuzzel" { spawn "fuzzel"; }
     ISO_Level3_Shift+R repeat=false { screenshot; }
@@ -106,4 +106,13 @@ binds {
     // off / 25 / 50 / 100 %.
     ISO_Level3_Shift+Shift+N allow-when-locked=true hotkey-overlay-title="Keyboard light brighter" { spawn "/usr/local/bin/penny-kbd-light" "up"; }
     ISO_Level3_Shift+Shift+B allow-when-locked=true hotkey-overlay-title="Keyboard light dimmer" { spawn "/usr/local/bin/penny-kbd-light" "down"; }
+    // Speaker volume: Fn+V / Fn+C, mute Fn+X, as printed. Bound both ways: with Fn
+    // held from before the key, niri sees the XF86 symbol the layout types, and the
+    // stock config binds those to wpctl, which is not installed (no PipeWire).
+    ISO_Level3_Shift+V allow-when-locked=true hotkey-overlay-title="Volume up" { spawn "/usr/local/bin/penny-volume" "up"; }
+    ISO_Level3_Shift+C allow-when-locked=true hotkey-overlay-title="Volume down" { spawn "/usr/local/bin/penny-volume" "down"; }
+    ISO_Level3_Shift+X allow-when-locked=true repeat=false hotkey-overlay-title="Mute" { spawn "/usr/local/bin/penny-volume" "mute"; }
+    XF86AudioRaiseVolume allow-when-locked=true hotkey-overlay-title=null { spawn "/usr/local/bin/penny-volume" "up"; }
+    XF86AudioLowerVolume allow-when-locked=true hotkey-overlay-title=null { spawn "/usr/local/bin/penny-volume" "down"; }
+    XF86AudioMute allow-when-locked=true repeat=false hotkey-overlay-title=null { spawn "/usr/local/bin/penny-volume" "mute"; }
 }
