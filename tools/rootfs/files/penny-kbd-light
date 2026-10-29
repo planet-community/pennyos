@@ -1,10 +1,33 @@
 #!/bin/sh
-# Keyboard backlight: penny-kbd-light up | down | off | <percent>
+# Keyboard backlight: penny-kbd-light up | down | off | <percent> | menu
 #
 # Fn+Shift+N / Fn+Shift+B (as printed on the keyboard) step through
 # off / 25 % / 50 % / 100 %. The LED is the SoC PWM on GPIO90
 # (devicetree/pennyos-kbd-backlight.dtsi); systemd-backlight restores the last
 # level at boot.
+#
+# "menu" (Settings > Keyboard light) sets the automatic light: on while typing
+# and for a while after (penny-kbd-auto), in ~/.config/pennyos/keyboard-light.
+CONF="$HOME/.config/pennyos/keyboard-light"
+if [ "$1" = menu ]; then
+  auto=on; timeout=15
+  [ -r "$CONF" ] && . "$CONF" && auto=${AUTO:-on} && timeout=${TIMEOUT:-15}
+  pick() { p=$1; shift; printf '%s\n' "$@" | fuzzel --dmenu --lines "$#" --width 40 --prompt "$p"; }
+  secs() { [ "$1" -ge 60 ] && echo "$(( $1 / 60 )) min" || echo "$1 s"; }
+  [ "$auto" = on ] && toggle="Light while typing: on (turn off)" || toggle="Light while typing: off (turn on)"
+  choice=$(pick "keyboard light  " "$toggle" "Stays on after typing: $(secs "$timeout")") || exit 0
+  case "$choice" in
+    "Light while typing"*) [ "$auto" = on ] && auto=off || auto=on ;;
+    Stays*)
+      t=$(pick "stays on  " "5 s" "10 s" "15 s" "30 s" "1 min" "5 min") || exit 0
+      case "$t" in *min) timeout=$(( ${t% min} * 60 )) ;; *) timeout=${t% s} ;; esac ;;
+  esac
+  mkdir -p "${CONF%/*}"
+  printf 'AUTO=%s\nTIMEOUT=%s\n' "$auto" "$timeout" > "$CONF"
+  notify-send -t 2500 -a penny-kbd-light "Keyboard light" \
+    "$( [ "$auto" = on ] && echo "On while typing, off $(secs "$timeout") after the last key" || echo "Automatic light off" )" 2>/dev/null
+  exit 0
+fi
 LED=$(ls -d /sys/class/leds/*kbd_backlight 2>/dev/null | head -n 1)
 [ -n "$LED" ] || { echo "no keyboard backlight LED" >&2; exit 1; }
 max=$(cat "$LED/max_brightness")

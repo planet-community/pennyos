@@ -148,7 +148,7 @@ workspace is a separate strip, stacked above and below.
 | Planet+Z / X | app narrower / wider |
 | Fn+A | overview of all apps and workspaces |
 | Fn+B / Fn+N | screen dimmer / brighter |
-| Fn+Shift+B / Fn+Shift+N | keyboard light dimmer / brighter (off, 25, 50, 100 %) |
+| Fn+Shift+B / Fn+Shift+N | keyboard light dimmer / brighter (off, 25, 50, 100 %); it also comes on while typing (Settings > Keyboard light) |
 | Fn+C / Fn+V | volume down / up |
 | Fn+X | mute / unmute |
 | Fn+Esc | screen off / on |
@@ -157,7 +157,8 @@ workspace is a separate strip, stacked above and below.
 | hold Esc (or the side button) | power menu: lock, sleep, log out, restart, power off |
 | close the lid | lock and sleep; opening it wakes |
 
-**Settings** (in the app list, or `penny-settings`) has Wi-Fi, power, and the first-time
+**Settings** (in the app list, or `penny-settings`) has Wi-Fi, power, the keyboard light
+(on while typing, and for how long after), and the first-time
 setup (name, password, language, keyboard, time zone). **Wi-Fi** is also one tap away: the icon in the bar on the left
 edge. From a computer, `ssh` in over the USB cable (left port) as shown above.
 

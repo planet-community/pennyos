@@ -12,6 +12,7 @@ have gnome-software && items="$items
 Software sources and updates"
 items="$items
 Power
+Keyboard light
 First-time setup (name, password, language, keyboard, time zone)"
 n=$(printf '%s\n' "$items" | wc -l)
 choice=$(printf '%s\n' "$items" | fuzzel --dmenu --lines "$n" --width 62 --prompt "settings  ") || exit 0
@@ -21,5 +22,6 @@ case "$choice" in
   "File manager") exec thunar-settings ;;
   Software*)      exec gnome-software --mode=updates ;;
   Power)          exec /usr/local/bin/penny-power-menu ;;
+  "Keyboard light") exec /usr/local/bin/penny-kbd-light menu ;;
   First-time*)    exec foot --title "PennyOS setup" /usr/local/bin/penny-setup ;;
 esac

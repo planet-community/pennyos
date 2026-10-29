@@ -7,11 +7,34 @@
 #  - the Wi-Fi/Bluetooth transport (btif) refuses unless the radio chip is idle,
 #    and it stays "busy" for a while after every refused attempt. Switching Wi-Fi
 #    off first is the one thing that made suspend succeed every time.
-# On wake both come back and wpa_supplicant is told to reconnect at once.
+# On wake both come back; wpa_supplicant is nudged only if it has not reconnected.
 # A third driver, the keyboard, suspends fine but is dead afterwards.
+#
+# The user session (niri, the lock screen) stays frozen until every post hook has
+# returned, so nothing slow runs inline on wake: Wi-Fi is brought back by a
+# separate systemd job. The keyboard light goes off before sleeping (the LED core
+# only switches it off at the very end of the suspend, seconds after the lid
+# closed) and comes back on wake if the lid is open.
 UDC=$(ls -d /sys/class/udc/* 2>/dev/null | head -1)
+KBD_LED=$(ls -d /sys/class/leds/*kbd_backlight 2>/dev/null | head -n 1)
+KBD_SAVED=/run/penny-kbd-light.saved
+# the switch state straight from the kernel: logind may not have seen the lid
+# open yet when this runs. evtest --query exits 10 when the switch is set (closed).
+lid_open() {
+  for d in /sys/class/input/event*; do
+    [ "$(cat $d/device/name)" = cosmo-gpio-keys ] || continue
+    evtest --query /dev/input/${d##*/} EV_SW SW_LID
+    [ $? -ne 10 ]; return
+  done
+  return 0
+}
 case "$1" in
   pre)
+    if [ -n "$KBD_LED" ]; then
+      # a refused attempt is retried (penny-sleep): keep the level from before the first
+      [ -e $KBD_SAVED ] || cat "$KBD_LED/brightness" > $KBD_SAVED
+      echo 0 > "$KBD_LED/brightness"
+    fi
     [ -n "$UDC" ] && echo disconnect > "$UDC/soft_connect"
     if [ -c /dev/wmtWifi ] && [ -d /sys/class/net/wlan0 ]; then
       touch /run/penny-wifi-was-on
@@ -23,11 +46,21 @@ case "$1" in
     # the keyboard matrix driver does not come back from sleep; rebinding it does
     K=/sys/bus/platform/drivers/gpio-fastmatrix-keyboard
     if [ -e $K/keyboard ]; then echo keyboard > $K/unbind; echo keyboard > $K/bind; fi
+    if [ -n "$KBD_LED" ] && [ -e $KBD_SAVED ] && lid_open; then
+      cat $KBD_SAVED > "$KBD_LED/brightness"
+      rm -f $KBD_SAVED
+    fi
     if [ -e /run/penny-wifi-was-on ]; then
       rm -f /run/penny-wifi-was-on
-      printf 1 > /dev/wmtWifi
-      sleep 4
-      /usr/sbin/wpa_cli -i wlan0 reassociate >/dev/null 2>&1
+      # wpa_supplicant usually reconnects by itself within ~5 s; a reassociate
+      # then breaks that fresh connection, so only nudge it if it has not
+      systemd-run --quiet --no-block --collect --unit=penny-wifi-resume sh -c '
+        printf 1 > /dev/wmtWifi
+        for i in 1 2 3 4 5 6 7 8; do
+          sleep 1
+          /usr/sbin/wpa_cli -i wlan0 status 2>/dev/null | grep -q "^wpa_state=COMPLETED" && exit 0
+        done
+        /usr/sbin/wpa_cli -i wlan0 reassociate >/dev/null 2>&1'
     fi ;;
 esac
 exit 0

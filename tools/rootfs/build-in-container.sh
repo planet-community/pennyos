@@ -155,7 +155,7 @@ if [ -x /work/out/niri/niri ]; then
     /work/tools/rootfs/files/penny-bar-close /work/tools/rootfs/files/penny-power-menu \
     /work/tools/rootfs/files/penny-sleep /work/tools/rootfs/files/penny-hold-esc \
     /work/tools/rootfs/files/penny-settings /work/tools/rootfs/files/penny-setup \
-    /work/tools/rootfs/files/penny-kbd-light /work/tools/rootfs/files/penny-volume /work/tools/rootfs/files/penny-diag "$R/usr/local/bin/"
+    /work/tools/rootfs/files/penny-kbd-light /work/tools/rootfs/files/penny-kbd-auto /work/tools/rootfs/files/penny-volume /work/tools/rootfs/files/penny-diag "$R/usr/local/bin/"
   # launcher tidy-up: a Settings entry, "Terminal" for foot, helper entries hidden
   # (/usr/local/share/applications overrides /usr/share/applications by file name)
   install -d "$R/usr/local/share/applications"

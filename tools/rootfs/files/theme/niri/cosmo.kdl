@@ -66,6 +66,8 @@ overview {
 spawn-at-startup "/usr/local/bin/penny-splash"
 // holding Esc or the side button (the same signal on this phone) opens the power menu
 spawn-at-startup "/usr/local/bin/penny-hold-esc"
+// typing lights the keyboard, off again a while after the last key (Settings > Keyboard light)
+spawn-at-startup "/usr/local/bin/penny-kbd-auto"
 // asks for the password when an app (GNOME Software, Thunar mounts) needs admin rights
 spawn-at-startup "/usr/libexec/polkit-mate-authentication-agent-1"
 spawn-at-startup "swaybg" "-m" "fill" "-i" "/usr/local/share/pennyos/wallpaper.png"
