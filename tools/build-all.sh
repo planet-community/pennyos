@@ -45,6 +45,20 @@ if [ ! -x out/niri/niri ] || [ "$(cat out/niri/TAG 2>/dev/null)" != "$NIRI_TAG" 
 else
   echo "out/niri already built ($NIRI_TAG)"
 fi
+step "desktop: fuzzel (launcher and menus, with touch)"
+# Pinned like niri. Debian's 1.12 ignores the touchscreen; pixman and fcft are pinned
+# inside tools/rootfs/build-fuzzel.sh.
+FUZZEL_TAG=1.15.0
+FUZZEL_COMMIT=c4491417f4d716d27d24428708de565d1636d689
+if [ ! -x out/fuzzel/fuzzel ] || [ "$(cat out/fuzzel/TAG 2>/dev/null)" != "$FUZZEL_TAG" ]; then
+  mkdir -p out/fuzzel
+  docker volume create cosmo-fuzzel-build >/dev/null
+  docker run --rm --platform linux/arm64 -v cosmo-fuzzel-build:/build -v "$PWD/tools:/work/tools:ro" -v "$PWD/out:/work/out" \
+    debian:trixie bash /work/tools/rootfs/build-fuzzel.sh "$FUZZEL_TAG" "$FUZZEL_COMMIT" | tail -3
+  echo "$FUZZEL_TAG" > out/fuzzel/TAG
+else
+  echo "out/fuzzel already built ($FUZZEL_TAG)"
+fi
 step "voice typing: whisper.cpp and its model"
 # Pinned like niri: tag AND commit for the source, checksum for the model.
 WHISPER_TAG=v1.9.5
